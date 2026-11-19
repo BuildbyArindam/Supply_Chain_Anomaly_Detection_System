@@ -1,0 +1,40 @@
+# Pinned runtime + dev dependencies. Python 3.11+ required.
+# Versions were the latest releases on PyPI on 2026-11-19.
+# Upgrade deliberately: change a pin, run `make test lint`, commit.
+#
+# PyTorch: on Linux this resolves to the default (CUDA-bundled) wheel. For a
+# small CPU-only install use:
+#   pip install torch==2.15.0 --index-url https://download.pytorch.org/whl/cpu
+
+# --- Streaming ---------------------------------------------------------------
+kafka-python==3.0.13
+confluent-kafka==2.16.2
+
+# --- ML / data ---------------------------------------------------------------
+torch==2.15.0
+scikit-learn==1.9.1
+pandas==3.1.1
+numpy==2.5.5
+
+# --- Visualisation / dashboard -----------------------------------------------
+plotly==7.1.0
+dash==4.5.0
+
+# --- API ---------------------------------------------------------------------
+fastapi==0.165.0
+uvicorn==0.54.0
+pydantic==2.14.4
+
+# --- Config / logging / metrics ----------------------------------------------
+python-dotenv==1.2.4
+PyYAML==6.0.3
+structlog==26.1.0
+prometheus-client==0.26.0
+
+# --- Dev tooling -------------------------------------------------------------
+pytest==9.2.0
+pytest-cov==7.1.0
+black==26.10.1
+ruff==0.17.5
+mypy==2.4.1
+types-PyYAML==6.0.12.20261113

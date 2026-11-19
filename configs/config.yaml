@@ -1,0 +1,257 @@
+# =============================================================================
+# Supply Chain Anomaly Detection - central configuration
+# =============================================================================
+# Loaded and validated by src/utils/config.py (unknown keys are rejected, so a
+# typo fails fast). When you add a key here, add it to the matching model in
+# src/utils/config.py too.
+#
+# Selected values can be overridden with environment variables or a .env file
+# (see ENV_OVERRIDES in src/utils/config.py and .env.example).
+#
+# NOTE: write floats in scientific notation as 1.0e-3 (PyYAML needs the dot and
+# the sign), not 1e-3.
+
+project:
+  name: supply-chain-anomaly-detection
+  environment: dev # dev | test | prod
+
+logging:
+  level: INFO # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  format: json # json | console (human-friendly output for local development)
+  service_name: scad
+
+# -----------------------------------------------------------------------------
+# Kafka
+# -----------------------------------------------------------------------------
+kafka:
+  bootstrap_servers: localhost:9092
+  producer:
+    acks: all
+    max_retries: 3 # application-level retries before a message goes to the DLQ
+    retry_backoff_ms: 100 # base delay, doubled on every retry (exponential backoff)
+    batch_size: 16384 # bytes
+    linger_ms: 5
+    compression_type: none # none | gzip | snappy | lz4 | zstd
+  consumer:
+    group_id: anomaly-detector
+    auto_offset_reset: latest # earliest | latest
+    enable_auto_commit: false # offsets are committed manually after processing
+    max_poll_records: 100
+    fetch_min_bytes: 1
+    session_timeout_ms: 30000
+    num_workers: 3
+  topics:
+    warehouse_sensors: &topic_defaults
+      name: warehouse-sensors
+      partitions: 6
+      replication_factor: 1
+      retention_ms: 604800000 # 7 days
+      max_message_bytes: 1048576 # 1 MB
+    vehicle_gps:
+      <<: *topic_defaults
+      name: vehicle-gps
+      partitions: 4
+    inventory_events:
+      <<: *topic_defaults
+      name: inventory-events
+      partitions: 4
+    anomaly_alerts:
+      <<: *topic_defaults
+      name: anomaly-alerts
+      partitions: 3
+    dlq_events:
+      <<: *topic_defaults
+      name: dlq-events
+      partitions: 1
+    model_health:
+      <<: *topic_defaults
+      name: model-health
+      partitions: 1
+
+# -----------------------------------------------------------------------------
+# Data simulation (ground-truth labels are always emitted)
+# -----------------------------------------------------------------------------
+simulation:
+  speed_multiplier: 1.0 # 1.0 = real time, 10.0 = 10x fast-forward
+  seed: 42 # set to null for non-deterministic runs
+  warehouse:
+    n_warehouses: 2
+    zones: [A, B, C]
+    sensors_per_zone: 2
+    reading_interval_s: 1.0
+    point_anomaly_rate: 0.02
+    contextual_anomaly_rate: 0.01
+    collective_anomaly_rate: 0.005
+    point_duration_range: [1, 5] # readings
+    collective_length_range: [10, 30] # readings
+    off_hours_start: 0 # contextual anomalies are injected between these hours
+    off_hours_end: 5
+  vehicle:
+    n_vehicles: 5
+    reading_interval_s: 10.0
+    route_deviation_m: 500.0 # distance from the route corridor that counts as a deviation
+    anomaly_rate: 0.02
+  inventory:
+    n_skus: 50
+    event_interval_s: 5.0
+    anomaly_rate: 0.01
+
+# -----------------------------------------------------------------------------
+# Stream processing and feature engineering
+# -----------------------------------------------------------------------------
+features:
+  window_seconds: [60, 300, 900] # 1, 5 and 15 minute windows
+  watermark_tolerance_s: 30 # late events accepted up to this many seconds
+  cache_ttl_s: 3600
+
+# -----------------------------------------------------------------------------
+# Models
+# -----------------------------------------------------------------------------
+models:
+  statistical:
+    zscore_threshold: 3.0
+    iqr_window: 1000
+    iqr_multiplier: 1.5
+    cusum_k: 0.5 # slack
+    cusum_h: 5.0 # decision threshold
+    cusum_cooldown_s: 60
+    z_weight: 0.4
+    iqr_weight: 0.3
+    cusum_weight: 0.3
+  isolation_forest:
+    n_estimators: 200
+    contamination: 0.01
+    max_features: 1.0
+    max_samples: 1.0
+    warmup_seconds: 3600
+    reservoir_size: 5000
+    refit_every: 1000
+    random_state: 42
+    best_params_path: configs/isolation_forest_best_params.json
+  lstm_autoencoder:
+    seq_len: 60
+    hidden_sizes: [64, 128]
+    dropout: 0.2
+    learning_rate: 1.0e-3
+    batch_size: 64
+    max_epochs: 100
+    early_stopping_patience: 10
+    grad_clip_norm: 1.0
+    kl_weight: 0.1
+    threshold_sigma: 3.0
+    mc_dropout_passes: 10
+  lstm_classifier:
+    seq_len: 30
+    hidden_size: 64
+    num_layers: 2
+    dropout: 0.3
+    learning_rate: 1.0e-3
+    weight_decay: 1.0e-4
+    batch_size: 64
+    max_epochs: 50
+    early_stopping_patience: 8
+    class_names: [normal, point, contextual]
+  ensemble:
+    statistical_weight: 0.2
+    isolation_forest_weight: 0.25
+    lstm_autoencoder_weight: 0.25
+    lstm_classifier_weight: 0.3
+    meta_learner_holdout: 0.2
+    cv_folds: 5
+
+# -----------------------------------------------------------------------------
+# Alerting and severity scoring
+# -----------------------------------------------------------------------------
+alerts:
+  severity_thresholds: # score below `warning` is INFO
+    warning: 0.3
+    critical: 0.6
+    emergency: 0.85
+  business_impact_weights:
+    cold_storage_temp: 1.0
+    vehicle_deviation: 0.8
+    inventory_drop: 0.7
+    default: 0.5
+  dedup_window_s: 300 # suppress duplicate alerts for the same entity (5 min)
+  escalation_after_s: 600 # persistent anomalies are upgraded after 10 min
+
+# -----------------------------------------------------------------------------
+# Real-time inference
+# -----------------------------------------------------------------------------
+inference:
+  num_workers: 4
+  backpressure_queue_depth: 1000 # beyond this, sample non-critical events
+  sampling_every_n: 5
+  anomaly_store_capacity: 10000
+  snapshot_interval_s: 300
+
+# -----------------------------------------------------------------------------
+# Feedback loop and retraining
+# -----------------------------------------------------------------------------
+feedback:
+  ema_alpha: 0.1
+  fp_burst_count: 5 # more than this many false positives within the window ...
+  fp_burst_window_minutes: 60
+  fp_threshold_raise: 0.1 # ... raises the entity threshold by this much
+  missed_tp_count: 3
+  missed_tp_threshold_lower: 0.05
+  recalibrate_every_minutes: 30
+  recalibrate_after_events: 50
+
+retraining:
+  check_interval_minutes: 15
+  feedback_events_trigger: 500
+  scheduled_interval_hours: 24
+  finetune_max_epochs: 10
+  finetune_learning_rate: 1.0e-5
+  replay_buffer_ratio: 0.5 # share of old data mixed into fine-tuning
+  min_f1_improvement: 0.02 # challenger must beat champion by this margin
+  rollback_error_spike: 0.20
+  rollback_window_minutes: 60
+
+# -----------------------------------------------------------------------------
+# Services
+# -----------------------------------------------------------------------------
+api:
+  host: 127.0.0.1
+  port: 8000
+  reload: false
+  predict_rate_limit_per_min: 100
+  batch_predict_rate_limit_per_min: 10
+  batch_max_size: 100
+  cors_origins: ["http://localhost:8050"]
+
+dashboard:
+  host: 127.0.0.1
+  port: 8050
+  debug: false
+  api_url: http://localhost:8000
+  refresh_interval_ms: 2000
+  theme: DARKLY
+  max_sse_connections: 50
+
+observability:
+  prometheus_port: 9090
+  grafana_port: 3000
+  kafka_ui_port: 8080
+  metrics_path: /metrics
+  slo:
+    detection_latency_p99_ms: 500
+    min_throughput_events_per_s: 500
+    min_f1: 0.80
+    max_false_positive_rate: 0.15
+    max_dashboard_load_s: 2.0
+  alerting:
+    latency_p99_ms: 500
+    latency_for_minutes: 5
+    kafka_lag_messages: 10000
+    min_f1: 0.7
+
+# -----------------------------------------------------------------------------
+# Paths (relative paths resolve against the project root)
+# -----------------------------------------------------------------------------
+paths:
+  model_registry: model_registry
+  reports: reports
+  feedback_store: feedback_store.json
+  anomaly_snapshots: anomaly_snapshots
