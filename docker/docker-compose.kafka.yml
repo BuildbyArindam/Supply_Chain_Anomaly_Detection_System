@@ -1,0 +1,107 @@
+# Local development Kafka: single-node KRaft (no ZooKeeper) + one-shot topic creation + Kafka UI.
+#
+#   make run-kafka     start the stack   (Kafka UI: http://localhost:8080)
+#   make stop-kafka    stop it           (data survives in the kafka-data volume)
+#
+# Two listeners, because "localhost" means something different inside and outside Docker:
+#   localhost:9092  for the host machine (simulator, API and tests started with `make`)
+#   kafka:29092     for other containers on this compose network (Kafka UI, kafka-init)
+#
+# Topic definitions below must match kafka.topics in configs/config.yaml;
+# tests/unit/test_kafka_compose.py fails if the two drift apart.
+name: scad-kafka
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: scad-kafka
+    hostname: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # --- KRaft: this node is both broker and controller --------------------------
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # Any 22-character base64 id works, but it must never change once the kafka-data
+      # volume holds data (`docker compose down -v` wipes both).
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      # --- Listeners -------------------------------------------------------------------
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # --- Single-broker settings --------------------------------------------------------
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are created explicitly by kafka-init so partition counts are exact; a typo in a
+      # topic name fails loudly instead of silently creating a 1-partition topic.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # --- Broker-wide defaults: 7 days retention, 1 MB messages ---------------------------------
+      KAFKA_LOG_RETENTION_MS: 604800000
+      KAFKA_MESSAGE_MAX_BYTES: 1048576
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # One-shot job: creates the topics (idempotent), prints them, then exits 0.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: scad-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        BOOTSTRAP=kafka:29092
+        RETENTION_MS=604800000   # 7 days
+        MAX_MESSAGE_BYTES=1048576 # 1 MB
+
+        create_topic() {
+          kafka-topics --bootstrap-server "$$BOOTSTRAP" --create --if-not-exists \
+            --topic "$$1" --partitions "$$2" --replication-factor 1 \
+            --config retention.ms="$$RETENTION_MS" \
+            --config max.message.bytes="$$MAX_MESSAGE_BYTES"
+        }
+
+        create_topic warehouse-sensors 6
+        create_topic vehicle-gps       4
+        create_topic inventory-events  4
+        create_topic anomaly-alerts    3
+        create_topic dlq-events        1
+        create_topic model-health      1
+
+        echo "Topics ready:"
+        kafka-topics --bootstrap-server "$$BOOTSTRAP" --describe | grep '^Topic:'
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: scad-kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: "false"
+    restart: unless-stopped
+
+volumes:
+  kafka-data:

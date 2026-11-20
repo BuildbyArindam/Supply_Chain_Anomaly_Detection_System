@@ -32,7 +32,7 @@ def test_show_config_is_valid_json(capsys):
     assert data["api"]["port"] == 8000
 
 
-@pytest.mark.parametrize("command", ["simulate", "api", "dashboard"])
+@pytest.mark.parametrize("command", ["api", "dashboard"])
 def test_future_components_exit_cleanly(command, capsys):
     assert main([command]) == EXIT_NOT_IMPLEMENTED
     assert "not implemented yet" in capsys.readouterr().err

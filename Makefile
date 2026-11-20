@@ -1,11 +1,11 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup run-kafka stop-kafka run-simulator run-api run-dashboard test lint format typecheck docker-build clean
+.PHONY: help setup run-kafka stop-kafka kafka-check run-simulator run-api run-dashboard test lint format typecheck docker-build clean
 
 PYTHON_BOOTSTRAP ?= python3
 VENV   := .venv
 PY     := $(VENV)/bin/python
 IMAGE  ?= supply-chain-anomaly-detection
-COMPOSE := docker compose -f docker/docker-compose.yml
+COMPOSE := docker compose -f docker/docker-compose.kafka.yml
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -22,10 +22,13 @@ run-kafka: ## Start Kafka (KRaft) and Kafka UI in Docker
 	$(COMPOSE) up -d
 	@echo "Kafka: localhost:9092   Kafka UI: http://localhost:8080"
 
-stop-kafka: ## Stop the Kafka containers
+stop-kafka: ## Stop the Kafka containers (data is kept in a volume)
 	$(COMPOSE) down
 
-run-simulator: ## Run the data simulator (Day 4)
+kafka-check: ## Check Kafka connectivity and topics
+	$(PY) scripts/start_simulation.py --check
+
+run-simulator: ## Stream simulated events into Kafka (needs `make run-kafka`)
 	$(PY) -m src.main simulate
 
 run-api: ## Run the FastAPI service (Day 14)

@@ -5,7 +5,7 @@ Examples::
     python -m src.main info            # configuration summary
     python -m src.main check-config    # validate configs/config.yaml
     python -m src.main show-config     # full effective configuration as JSON
-    python -m src.main simulate        # start the data simulator   (Day 4)
+    python -m src.main simulate        # stream simulated events into Kafka
     python -m src.main api             # start the FastAPI service  (Day 14)
     python -m src.main dashboard       # start the Dash dashboard   (Day 18)
 
@@ -80,12 +80,17 @@ def _cmd_show_config(cfg: AppConfig) -> int:
 
 
 def _cmd_simulate(cfg: AppConfig) -> int:
-    """Run ``scripts/start_simulation.py`` once it exists."""
+    """Stream the simulation into Kafka via ``scripts/start_simulation.py``.
+
+    The script is loaded under a different ``run_name`` so its own command-line parsing
+    (``__main__`` block) does not see this CLI's arguments; only ``run(cfg)`` is called.
+    For flags such as ``--speed`` or ``--duration`` run the script directly.
+    """
     script = PROJECT_ROOT / "scripts" / "start_simulation.py"
     if not script.is_file():
         return _not_implemented("The simulator", 4)
-    runpy.run_path(str(script), run_name="__main__")
-    return EXIT_OK
+    namespace = runpy.run_path(str(script), run_name="start_simulation")
+    return int(namespace["run"](cfg))
 
 
 def _cmd_api(cfg: AppConfig) -> int:
@@ -111,7 +116,7 @@ _COMMANDS: dict[str, tuple[Callable[[AppConfig], int], str]] = {
     "info": (_cmd_info, "print a configuration summary"),
     "check-config": (_cmd_check_config, "validate the configuration file"),
     "show-config": (_cmd_show_config, "print the effective configuration as JSON"),
-    "simulate": (_cmd_simulate, "start the data simulator (Day 4)"),
+    "simulate": (_cmd_simulate, "stream simulated events into Kafka"),
     "api": (_cmd_api, "start the FastAPI inference service (Day 14)"),
     "dashboard": (_cmd_dashboard, "start the Dash dashboard (Day 18)"),
 }

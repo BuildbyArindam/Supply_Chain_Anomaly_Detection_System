@@ -29,7 +29,7 @@ src/
   main.py            CLI entry point (python -m src.main COMMAND)
 tests/               unit/, integration/, load/
 configs/             config.yaml - single source of truth for all parameters
-docker/              Dockerfile, docker-compose.yml (Kafka + Kafka UI)
+docker/              Dockerfile, docker-compose.kafka.yml (Kafka + topic init + Kafka UI)
 notebooks/ scripts/ docs/
 ```
 
