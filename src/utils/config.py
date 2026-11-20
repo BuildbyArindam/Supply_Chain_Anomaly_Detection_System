@@ -209,7 +209,16 @@ class InventorySimConfig(_Section):
 
     n_skus: int = Field(default=50, ge=1)
     event_interval_s: float = Field(default=5.0, gt=0)
+    transaction_probability: float = Field(default=0.25, gt=0, le=1)  # per SKU per interval
     anomaly_rate: float = Field(default=0.01, ge=0, le=1)
+
+
+class OrderSimConfig(_Section):
+    """Order-fulfilment event simulation (not wired to a Kafka topic yet)."""
+
+    enabled: bool = False  # include order events in the orchestrator stream
+    arrival_rate_per_s: float = Field(default=0.2, gt=0)
+    anomaly_rate: float = Field(default=0.02, ge=0, le=1)
 
 
 class SimulationConfig(_Section):
@@ -220,6 +229,7 @@ class SimulationConfig(_Section):
     warehouse: WarehouseSimConfig = Field(default_factory=WarehouseSimConfig)
     vehicle: VehicleSimConfig = Field(default_factory=VehicleSimConfig)
     inventory: InventorySimConfig = Field(default_factory=InventorySimConfig)
+    order: OrderSimConfig = Field(default_factory=OrderSimConfig)
 
 
 # --------------------------------------------------------------------------- #

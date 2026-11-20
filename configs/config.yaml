@@ -94,7 +94,12 @@ simulation:
   inventory:
     n_skus: 50
     event_interval_s: 5.0
+    transaction_probability: 0.25 # chance per SKU per interval that it transacts
     anomaly_rate: 0.01
+  order: # order-fulfilment timestamps; no Kafka topic yet, so off by default
+    enabled: false
+    arrival_rate_per_s: 0.2
+    anomaly_rate: 0.02
 
 # -----------------------------------------------------------------------------
 # Stream processing and feature engineering

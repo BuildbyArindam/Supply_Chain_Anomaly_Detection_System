@@ -814,12 +814,13 @@ def test_package_exports():
     from src import data_simulation
 
     assert data_simulation.WarehouseSimulator is ws.WarehouseSimulator
-    assert set(data_simulation.__all__) == {
+    # Later days add more exports (GPS, inventory, orchestrator); the Day 2 ones must remain.
+    assert {
         "WarehouseReading",
         "WarehouseSensor",
         "WarehouseSimulator",
         "build_default_sensors",
-    }
+    } <= set(data_simulation.__all__)
 
 
 def test_sample_within_falls_back_to_clamped_mean():
