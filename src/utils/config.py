@@ -477,6 +477,7 @@ class ObservabilityConfig(_Section):
     grafana_port: int = Field(default=3000, ge=1, le=65535)
     kafka_ui_port: int = Field(default=8080, ge=1, le=65535)
     metrics_path: str = "/metrics"
+    consumer_metrics_port: int = Field(default=8001, ge=1, le=65535)  # exporter of `consume`
     slo: SLOConfig = Field(default_factory=SLOConfig)
     alerting: AlertRulesConfig = Field(default_factory=AlertRulesConfig)
 

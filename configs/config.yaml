@@ -240,6 +240,7 @@ observability:
   grafana_port: 3000
   kafka_ui_port: 8080
   metrics_path: /metrics
+  consumer_metrics_port: 8001 # Prometheus exporter of `python -m src.main consume`
   slo:
     detection_latency_p99_ms: 500
     min_throughput_events_per_s: 500

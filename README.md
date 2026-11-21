@@ -3,7 +3,7 @@
 Streams warehouse sensor, vehicle GPS and inventory events through Kafka and flags anomalies
 with a statistical + Isolation Forest + LSTM ensemble, served by FastAPI and a Dash dashboard.
 
-Status: **Day 1 of 30 - project scaffold.** The simulator, models, API and dashboard are added in later days.
+Status: **Day 5 of 30 - streaming consumer and feature cache.** Models, API and dashboard are added in later days.
 
 ## Quick start
 
@@ -40,6 +40,22 @@ internals sideways (e.g. `dashboard` talks to `api` over HTTP, not by importing 
 Note: `src/kafka/` is a package name that also exists on PyPI as `kafka-python`. Always use
 absolute imports (`from src.kafka import ...` for ours, `import kafka` for the library) and
 run code from the project root, never with `src/` on `PYTHONPATH`.
+
+## Streaming consumer (Day 5)
+
+```bash
+make run-kafka && make run-simulator      # produce events (Day 4)
+make run-consumer                         # consume -> windowed features -> feature cache
+curl localhost:8001/metrics | grep scad_  # Prometheus exporter of the consumer
+```
+
+`consumer.py` (worker pool, manual commits, lag) -> `stream_processor.py` (1/5/15-minute
+sliding windows per entity: mean, std, min, max, rate of change, p95; event-time watermark of
+30 s) -> `feature_cache.py` (`store_features` / `get_features` / `get_history`, Redis-shaped).
+`pipeline.py` wires them; `tests/mock_kafka.py` is an in-memory broker for tests.
+Delivery is at-least-once; duplicates are dropped by `message_id`. Key metrics:
+`scad_messages_consumed_total`, `scad_processing_latency_seconds`, `scad_cache_hit_ratio`,
+`scad_kafka_consumer_lag`.
 
 ## Configuration
 

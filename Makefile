@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup run-kafka stop-kafka kafka-check run-simulator run-api run-dashboard test lint format typecheck docker-build clean
+.PHONY: help setup run-kafka stop-kafka kafka-check run-simulator run-consumer run-api run-dashboard test lint format typecheck docker-build clean
 
 PYTHON_BOOTSTRAP ?= python3
 VENV   := .venv
@@ -30,6 +30,9 @@ kafka-check: ## Check Kafka connectivity and topics
 
 run-simulator: ## Stream simulated events into Kafka (needs `make run-kafka`)
 	$(PY) -m src.main simulate
+
+run-consumer: ## Consume Kafka, compute windowed features (metrics on :8001)
+	$(PY) -m src.main consume
 
 run-api: ## Run the FastAPI service (Day 14)
 	$(PY) -m src.main api

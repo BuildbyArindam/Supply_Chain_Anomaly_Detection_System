@@ -6,7 +6,8 @@ Examples::
     python -m src.main check-config    # validate configs/config.yaml
     python -m src.main show-config     # full effective configuration as JSON
     python -m src.main simulate        # stream simulated events into Kafka
-    python -m src.main api             # start the FastAPI service  (Day 14)
+    python -m src.main consume         # windowed features + feature cache (Day 5)
+    python -m src.main api            # start the FastAPI service  (Day 14)
     python -m src.main dashboard       # start the Dash dashboard   (Day 18)
 
 Commands for components that do not exist yet exit with status 2 and a short
@@ -93,6 +94,17 @@ def _cmd_simulate(cfg: AppConfig) -> int:
     return int(namespace["run"](cfg))
 
 
+def _cmd_consume(cfg: AppConfig) -> int:
+    """Run the Day 5 consumer -> windowed features -> feature cache pipeline."""
+    from prometheus_client import start_http_server
+
+    from src.kafka.pipeline import build_pipeline
+
+    start_http_server(cfg.observability.consumer_metrics_port)
+    runtime = build_pipeline(cfg)
+    return runtime.run_forever()
+
+
 def _cmd_api(cfg: AppConfig) -> int:
     """Serve ``src.api.main:app`` with uvicorn once it exists."""
     if not _module_available("src.api.main"):
@@ -117,6 +129,7 @@ _COMMANDS: dict[str, tuple[Callable[[AppConfig], int], str]] = {
     "check-config": (_cmd_check_config, "validate the configuration file"),
     "show-config": (_cmd_show_config, "print the effective configuration as JSON"),
     "simulate": (_cmd_simulate, "stream simulated events into Kafka"),
+    "consume": (_cmd_consume, "consume Kafka, compute windowed features, fill the cache"),
     "api": (_cmd_api, "start the FastAPI inference service (Day 14)"),
     "dashboard": (_cmd_dashboard, "start the Dash dashboard (Day 18)"),
 }

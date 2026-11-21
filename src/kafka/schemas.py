@@ -240,7 +240,13 @@ class DLQErrorInfo(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    reason: Literal["validation_error", "message_too_large", "delivery_failed", "produce_failed"]
+    reason: Literal[
+        "validation_error",
+        "message_too_large",
+        "delivery_failed",
+        "produce_failed",
+        "processing_failed",  # consumer side (Day 5): the handler kept failing
+    ]
     error_type: str
     message: str
     error_code: str | None = None
