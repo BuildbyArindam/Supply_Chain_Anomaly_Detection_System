@@ -1,0 +1,193 @@
+{
+  "generated_utc": "2026-11-21T20:32:27+00:00",
+  "simulation": {
+    "seed": 42,
+    "hours": 24,
+    "start": "2026-11-20T00:00:00+00:00",
+    "orders": false
+  },
+  "class_balance": {
+    "warehouse": {
+      "rows": 1036800,
+      "anomaly_rate": 0.033742283950617284,
+      "by_class": {
+        "normal": 1001816,
+        "point": 19842,
+        "contextual": 10051,
+        "collective": 5091
+      }
+    },
+    "vehicle": {
+      "rows": 43200,
+      "anomaly_rate": 0.02185185185185185,
+      "by_class": {
+        "normal": 42256,
+        "point": 600,
+        "collective": 344
+      }
+    },
+    "inventory": {
+      "rows": 216098,
+      "anomaly_rate": 0.008746031892937463,
+      "by_class": {
+        "normal": 214208,
+        "point": 1243,
+        "contextual": 647
+      }
+    }
+  },
+  "lstm_lookback": {
+    "warehouse": 45,
+    "vehicle": 45,
+    "inventory": 10
+  },
+  "isolation_forest_contamination": {
+    "warehouse": 0.025,
+    "vehicle": 0.015,
+    "inventory": 0.01
+  },
+  "isolation_forest_prevalence": {
+    "warehouse": 0.033448222144331505,
+    "vehicle": 0.021895081201074893,
+    "inventory": 0.00875663327896669
+  },
+  "feature_priority": {
+    "warehouse": [
+      "value__margin_low",
+      "value__z_window",
+      "hour_cos",
+      "value__dev_signed",
+      "value__roc_short",
+      "hour_sin",
+      "value__range_short",
+      "value__last",
+      "value__vol_ratio",
+      "value__level_shift",
+      "value__roc_medium",
+      "zone_C"
+    ],
+    "vehicle": [
+      "speed_kmh__margin_low",
+      "speed_kmh__level_shift",
+      "route_adherence_score__dev_signed",
+      "speed_kmh__last",
+      "route_adherence_score__last",
+      "route_adherence_score__level_shift",
+      "speed_kmh__roc_medium",
+      "speed_kmh__p95_short",
+      "route_adherence_score__mean_short",
+      "route_adherence_score__accel",
+      "route_adherence_score__roc_medium",
+      "speed_kmh__roc_short"
+    ],
+    "inventory": [
+      "change_amount__z_baseline",
+      "change_amount__last",
+      "change_amount__level_shift",
+      "change_amount__range_short",
+      "new_level__vol_ratio",
+      "change_amount__vol_ratio",
+      "new_level__range_short",
+      "stock_vs_reorder",
+      "change_amount__roc_medium",
+      "change_amount__z_window",
+      "new_level__level_shift",
+      "new_level__z_baseline"
+    ]
+  },
+  "features_constant_offline": {
+    "warehouse": [
+      "time_since_last_anomaly_log",
+      "log_count_short",
+      "dow_sin",
+      "dow_cos",
+      "anomaly_rate_7d",
+      "reliability"
+    ],
+    "vehicle": [
+      "time_since_last_anomaly_log",
+      "log_count_short",
+      "dow_sin",
+      "dow_cos",
+      "anomaly_rate_7d",
+      "reliability"
+    ],
+    "inventory": [
+      "time_since_last_anomaly_log",
+      "dow_sin",
+      "dow_cos",
+      "anomaly_rate_7d",
+      "reliability"
+    ]
+  },
+  "features_redundant": {
+    "warehouse": {
+      "value__margin_high": "value__margin_low",
+      "value__z_baseline": "value__margin_low",
+      "value__accel": "value__roc_short",
+      "value__p95_short": "value__last",
+      "value__mean_short": "value__last",
+      "value__std_short": "value__range_short"
+    },
+    "vehicle": {
+      "speed_kmh__margin_high": "speed_kmh__margin_low",
+      "route_adherence_score__margin_high": "route_adherence_score__last",
+      "route_adherence_score__margin_low": "route_adherence_score__last",
+      "speed_kmh__z_baseline": "speed_kmh__margin_low",
+      "speed_kmh__accel": "speed_kmh__roc_short",
+      "speed_kmh__mean_short": "speed_kmh__p95_short",
+      "speed_kmh__z_window": "speed_kmh__margin_low",
+      "route_adherence_score__std_short": "route_adherence_score__range_short",
+      "speed_kmh__std_short": "speed_kmh__range_short"
+    },
+    "inventory": {
+      "new_level__margin_high": "stock_vs_reorder",
+      "new_level__margin_low": "stock_vs_reorder",
+      "new_level__std_short": "new_level__range_short",
+      "change_amount__std_short": "change_amount__range_short",
+      "new_level__mean_short": "new_level__p95_short",
+      "new_level__last": "new_level__p95_short"
+    }
+  },
+  "baselines_heldout_entities": {
+    "random_forest": {
+      "warehouse": {
+        "pr_auc": 0.8154644241019009,
+        "roc_auc": 0.951275620757145,
+        "best_f1": 0.7945884686211281
+      },
+      "vehicle": {
+        "pr_auc": 0.9469355298789883,
+        "roc_auc": 0.9791130917383535,
+        "best_f1": 0.9569230769225773
+      },
+      "inventory": {
+        "pr_auc": 0.9873409826745145,
+        "roc_auc": 0.9991963795794279,
+        "best_f1": 0.969387755101541
+      }
+    },
+    "isolation_forest": {
+      "warehouse": {
+        "roc_auc": 0.8935103904472684,
+        "pr_auc": 0.6274069204689299,
+        "best_f1": 0.6327030812320007
+      },
+      "vehicle": {
+        "roc_auc": 0.9548855696614397,
+        "pr_auc": 0.7771065620782505,
+        "best_f1": 0.7309644670045846
+      },
+      "inventory": {
+        "roc_auc": 0.9502706531385584,
+        "pr_auc": 0.13395452972093702,
+        "best_f1": 0.221995926679748
+      }
+    }
+  },
+  "pos_weight": {
+    "warehouse": 28.63640521381203,
+    "vehicle": 44.76271186440678,
+    "inventory": 113.33756613756614
+  }
+}
