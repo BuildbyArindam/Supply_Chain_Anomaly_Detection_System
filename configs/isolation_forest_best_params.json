@@ -1,0 +1,21 @@
+{
+  "source_type": "warehouse",
+  "created_at": "2026-11-22T10:20:44.994127+00:00",
+  "objective": "binary F1 (any anomaly vs normal) on held-out validation data",
+  "n_train_rows": 5000,
+  "n_val_rows": 108000,
+  "val_anomaly_rate": 0.049815,
+  "best_params": {
+    "n_estimators": 201,
+    "contamination": 0.019446974929547375,
+    "max_features": 0.7315569330480514,
+    "max_samples": 0.6409454518345838
+  },
+  "best_f1": 0.4784622510421491,
+  "default_f1": 0.38639018691588783,
+  "n_trials": 50,
+  "n_complete": 22,
+  "n_pruned": 28,
+  "data": "simulated warehouse sensors, seed 7; warm-up 22:00-23:00, validation 23:00-01:30 UTC",
+  "notebook": "notebooks/03_isolation_forest_eval.ipynb"
+}

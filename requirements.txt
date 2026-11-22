@@ -15,6 +15,13 @@ torch==2.15.0
 scikit-learn==1.9.1
 pandas==3.1.1
 numpy==2.5.5
+joblib==1.6.0
+optuna==5.1.0
+shap==0.54.1
+
+# --- Notebooks / evaluation plots -------------------------------------------
+matplotlib==3.11.2
+seaborn==0.13.2
 
 # --- Visualisation / dashboard -----------------------------------------------
 plotly==7.1.0
