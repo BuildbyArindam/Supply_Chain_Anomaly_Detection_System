@@ -136,6 +136,7 @@ models:
   lstm_autoencoder:
     seq_len: 60
     hidden_sizes: [64, 128]
+    latent_dim: 32 # width of the variational bottleneck the KL term regularises
     dropout: 0.2
     learning_rate: 1.0e-3
     batch_size: 64

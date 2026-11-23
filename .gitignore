@@ -25,6 +25,7 @@ htmlcov/
 # Runtime artifacts (generated, not source)
 model_registry/
 reports/
+runs/
 anomaly_snapshots/
 feedback_store.json
 *.pt

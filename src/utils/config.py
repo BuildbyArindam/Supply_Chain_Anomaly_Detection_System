@@ -283,6 +283,7 @@ class LSTMAutoencoderConfig(_Section):
 
     seq_len: int = Field(default=60, ge=2)
     hidden_sizes: tuple[int, int] = (64, 128)
+    latent_dim: int = Field(default=32, ge=1)
     dropout: float = Field(default=0.2, ge=0, lt=1)
     learning_rate: float = Field(default=1.0e-3, gt=0)
     batch_size: int = Field(default=64, ge=1)
