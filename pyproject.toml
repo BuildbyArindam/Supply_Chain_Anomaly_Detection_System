@@ -30,6 +30,8 @@ ignore = [
 # `X` / `X_train` are the scikit-learn convention for feature matrices.
 "src/models/isolation_forest_detector.py" = ["N803"]
 "tests/unit/test_isolation_forest_detector.py" = ["D", "N806"]
+# Embedded HTML / CSS templates have long lines.
+"src/models/evaluator.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
