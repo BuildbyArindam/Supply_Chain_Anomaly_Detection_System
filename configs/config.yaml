@@ -159,9 +159,11 @@ models:
     class_names: [normal, point, contextual]
   ensemble:
     statistical_weight: 0.2
-    isolation_forest_weight: 0.25
+    # isolation_forest_weight: 0.25
+    isolation_forest_weight: 0.3
     lstm_autoencoder_weight: 0.25
-    lstm_classifier_weight: 0.3
+    # lstm_classifier_weight: 0.3
+    lstm_classifier_weight: 0.25
     meta_learner_holdout: 0.2
     cv_folds: 5
 
