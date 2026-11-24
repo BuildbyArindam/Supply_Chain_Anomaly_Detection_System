@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup run-kafka stop-kafka kafka-check run-simulator run-consumer run-api run-dashboard test lint format typecheck docker-build clean
+.PHONY: help setup run-kafka stop-kafka kafka-check run-simulator run-consumer run-api run-streaming test-perf run-dashboard test lint format typecheck docker-build clean
 
 PYTHON_BOOTSTRAP ?= python3
 VENV   := .venv
@@ -36,6 +36,12 @@ run-consumer: ## Consume Kafka, compute windowed features (metrics on :8001)
 
 run-api: ## Run the FastAPI service (Day 14)
 	$(PY) -m src.main api
+
+run-streaming: ## Run streaming inference engine + API in one process (Day 15)
+	$(PY) scripts/run_streaming_pipeline.py
+
+test-perf: ## Run the 1000 events/s x 30 s latency load test (Day 15)
+	$(PY) -m pytest tests/test_streaming_performance.py -s
 
 run-dashboard: ## Run the Dash dashboard (Day 18)
 	$(PY) -m src.main dashboard

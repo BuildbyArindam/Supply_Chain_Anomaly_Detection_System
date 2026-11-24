@@ -34,15 +34,19 @@ from src.api.anomaly_store import AnomalyStore
 from src.api.feedback_store import FeedbackRecord, FeedbackStore
 from src.api.schemas import AnomalyDetectionResponse, FeedbackRequest, SensorEventRequest
 from src.kafka.feature_cache import FeatureCache
-from src.kafka.stream_processor import WindowedAggregator
+from src.kafka.schemas import KafkaMessage
+from src.kafka.stream_processor import UpdateOutcome, WindowedAggregator
 from src.models.ensemble_detector import (
     ISOLATION_FOREST,
     LSTM_AUTOENCODER,
     LSTM_CLASSIFIER,
     STATISTICAL,
     AlertDeduplicator,
+    AnomalyEvent,
+    EnsembleAnomalyScore,
     EnsembleDetector,
     EntityContext,
+    SeverityResult,
     SeverityScorer,
     build_anomaly_event,
 )
@@ -66,6 +70,26 @@ _ISOLATION_FOREST_PREFIX: Final = "isolation_forest"
 _LSTM_AE_TYPE: Final = "lstm_autoencoder"
 _LSTM_CLS_TYPE: Final = "lstm_classifier"
 _META_TYPE: Final = "ensemble_meta_learner"
+
+
+@dataclass(frozen=True)
+class Evaluation:
+    """The result of scoring one event (:meth:`InferenceService.evaluate`).
+
+    Attributes:
+        score: The ensemble verdict.
+        outcome: What the windowed aggregator did with the event.
+        severity: Severity result, set only when the event was anomalous.
+        alert: The stored :class:`AnomalyEvent` (new or escalated); ``None`` if the event was
+            normal or its alert was suppressed as a duplicate.
+        suppressed: ``True`` when an anomalous event's alert was de-duplicated.
+    """
+
+    score: EnsembleAnomalyScore
+    outcome: UpdateOutcome
+    severity: SeverityResult | None
+    alert: AnomalyEvent | None
+    suppressed: bool
 
 
 class EventNotFoundError(LookupError):
@@ -355,14 +379,26 @@ class InferenceService:
     # ------------------------------------------------------------------ #
     # Prediction
     # ------------------------------------------------------------------ #
-    def predict(self, request: SensorEventRequest) -> AnomalyDetectionResponse:
-        """Score one event and, if it is anomalous, raise (or de-duplicate) an alert."""
-        started = self._clock()
-        message = request.to_kafka_message()
-        raw = request.to_raw_event()
-        entity_id = request.entity_id
-        active = self.models.active  # one reference for the whole request (hot-swap safe)
-        ensemble = active.ensembles[request.source_type]
+    def evaluate(self, message: KafkaMessage, raw: Mapping[str, Any]) -> Evaluation:
+        """Run one event through the whole scoring path (shared by the API and the stream engine).
+
+        ``aggregate -> cache -> features -> ensemble -> severity -> AnomalyEvent -> de-duplicate
+        -> AnomalyStore``. The stateful detectors and the aggregator are not thread-safe, so the
+        whole step runs under the service lock; callers may call this from any thread.
+
+        Args:
+            message: The event in its Kafka envelope (what the stream processor ingests).
+            raw: The simulator-style dict the detectors read (ground-truth labels are never used).
+
+        Returns:
+            The verdict, with the stored alert if one was raised and not suppressed.
+
+        Raises:
+            KeyError: ``message.source_type`` has no ensemble (for example an order event).
+        """
+        entity_id = message.entity_id
+        active = self.models.active  # one reference for the whole call (hot-swap safe)
+        ensemble = active.ensembles[message.source_type]
 
         with self._lock:
             outcome = self.aggregator.process_message(message)
@@ -384,10 +420,21 @@ class InferenceService:
                     suppressed = True
                 else:
                     self.anomaly_store.add(alert)
+        return Evaluation(
+            score=score, outcome=outcome, severity=severity, alert=alert, suppressed=suppressed
+        )
+
+    def predict(self, request: SensorEventRequest) -> AnomalyDetectionResponse:
+        """Score one event and, if it is anomalous, raise (or de-duplicate) an alert."""
+        started = self._clock()
+        message = request.to_kafka_message()
+        evaluation = self.evaluate(message, request.to_raw_event())
+        score, outcome = evaluation.score, evaluation.outcome
+        severity, alert = evaluation.severity, evaluation.alert
 
         method = str(score.details.get("method", "none"))
         return AnomalyDetectionResponse(
-            entity_id=entity_id,
+            entity_id=request.entity_id,
             source_type=request.source_type,
             timestamp=request.timestamp,
             is_anomaly=score.is_anomaly,
@@ -397,7 +444,7 @@ class InferenceService:
             severity=severity.level.name if severity else None,  # type: ignore[arg-type]
             severity_score=severity.score if severity else None,
             event_id=alert.event_id if alert else None,
-            alert_suppressed=suppressed,
+            alert_suppressed=evaluation.suppressed,
             method=method,
             models_used=sorted(score.individual_scores),
             individual_scores={k: _clip01(v) for k, v in score.individual_scores.items()},

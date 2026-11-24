@@ -57,6 +57,24 @@ Delivery is at-least-once; duplicates are dropped by `message_id`. Key metrics:
 `scad_messages_consumed_total`, `scad_processing_latency_seconds`, `scad_cache_hit_ratio`,
 `scad_kafka_consumer_lag`.
 
+## Real-time inference (Day 15)
+
+```bash
+make run-kafka && make run-simulator      # events in
+make run-streaming                        # engine + API on one asyncio loop (Ctrl+C = graceful)
+curl localhost:8000/api/v1/pipeline/stats # counters, queue depth, p50/p95/p99
+make test-perf                            # 1000 ev/s for 30 s: p99 < 500 ms, 0 dropped
+```
+
+`src/kafka/streaming_inference.py`: `StreamingInferenceEngine` consumes `warehouse-sensors`,
+`vehicle-gps` and `inventory-events` and scores each event through the same
+`InferenceService.evaluate()` the REST API uses; alerts go to `anomaly-alerts` and into the
+`AnomalyStore` (snapshotted every 5 minutes). Events are sharded by entity so each entity is scored
+in order. Above 1000 queued events non-critical entities are sampled (every 5th; cold-storage
+temperature never). `LatencyTracker` measures producer timestamp to alert published and logs a
+WARNING when p99 > 500 ms (`scad_detection_latency_seconds`). The load test uses the statistical
+detector only; trained LSTM/IF models are slower per event.
+
 ## Configuration
 
 Parameters live in `configs/config.yaml` and are validated in `src/utils/config.py`

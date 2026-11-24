@@ -38,6 +38,7 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 markers = [
     "integration: needs external services such as Kafka (deselect with -m 'not integration')",
+    "performance: load test that runs for about 30 s (deselect with -m 'not performance')",
 ]
 
 [tool.mypy]

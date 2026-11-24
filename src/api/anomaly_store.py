@@ -6,7 +6,9 @@ capacity is exceeded the oldest alert is evicted. It is the single source of tru
 ``GET /api/v1/anomalies`` and, later, the dashboard.
 
 Persistence: :meth:`snapshot` writes all alerts to a JSON file atomically (temp file + rename)
-and :meth:`load_snapshot` restores them, so a restart does not empty the alert list.
+and :meth:`load_snapshot` restores them, so a restart does not empty the alert list. Day 15 adds
+:meth:`start_periodic_snapshots`, a background thread that does this every few minutes (and once
+more on stop), so a crash loses at most one interval of alerts.
 """
 
 from __future__ import annotations
@@ -50,6 +52,9 @@ class AnomalyStore:
         self._events: OrderedDict[str, AnomalyEvent] = OrderedDict()
         self._lock = threading.RLock()
         self._evicted = 0
+        self._snapshot_thread: threading.Thread | None = None
+        self._snapshot_stop = threading.Event()
+        self._snapshot_path: Path | None = None
 
     def __len__(self) -> int:
         with self._lock:
@@ -158,6 +163,49 @@ class AnomalyStore:
             Path(tmp).unlink(missing_ok=True)
             raise
         return len(payload)
+
+    def start_periodic_snapshots(self, path: str | Path, interval_s: float = 300.0) -> None:
+        """Snapshot to ``path`` every ``interval_s`` seconds on a daemon thread.
+
+        A failed write is logged and retried at the next tick; it never stops the thread.
+        Calling this while a schedule is already running replaces it.
+
+        Raises:
+            ValueError: ``interval_s`` is not positive.
+        """
+        if interval_s <= 0:
+            raise ValueError("interval_s must be > 0")
+        self.stop_periodic_snapshots(final=False)
+        target = Path(path)
+        self._snapshot_path = target
+        self._snapshot_stop = threading.Event()
+        stop = self._snapshot_stop
+
+        def _loop() -> None:
+            while not stop.wait(interval_s):
+                self._snapshot_quietly(target)
+
+        thread = threading.Thread(target=_loop, name="scad-anomaly-snapshots", daemon=True)
+        self._snapshot_thread = thread
+        thread.start()
+
+    def stop_periodic_snapshots(self, *, final: bool = True) -> None:
+        """Stop the snapshot thread; with ``final`` write one last snapshot first."""
+        thread, path = self._snapshot_thread, self._snapshot_path
+        if thread is None:
+            return
+        self._snapshot_stop.set()
+        thread.join(timeout=5.0)
+        self._snapshot_thread = None
+        if final and path is not None:
+            self._snapshot_quietly(path)
+
+    def _snapshot_quietly(self, path: Path) -> None:
+        try:
+            count = self.snapshot(path)
+            _log.debug("anomaly_snapshot_written", path=str(path), alerts=count)
+        except OSError as error:
+            _log.error("anomaly_snapshot_failed", path=str(path), error=repr(error))
 
     def load_snapshot(self, path: str | Path) -> int:
         """Restore alerts from a :meth:`snapshot` file; return how many were loaded.

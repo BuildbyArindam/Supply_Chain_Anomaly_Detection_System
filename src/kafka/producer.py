@@ -284,6 +284,7 @@ class KafkaProducerManager:
             "order": topics.inventory_events.name,
         }
         self._dlq_topic = topics.dlq_events.name
+        self._alerts_topic = topics.anomaly_alerts.name
         self._max_bytes: dict[str, int] = {
             topic.name: topic.max_message_bytes for topic in topics.as_list()
         }
@@ -422,6 +423,58 @@ class KafkaProducerManager:
     def send_batch(self, events: Iterable[Mapping[str, Any]]) -> int:
         """Publish many orchestrator envelopes; return how many were queued."""
         return sum(self.send_event(event) for event in events)
+
+    def send_alert(self, alert: Mapping[str, Any]) -> bool:
+        """Publish one alert (``AnomalyEvent.to_dict()``) to the ``anomaly-alerts`` topic.
+
+        The record is keyed by ``entity_id`` so every alert of one entity lands in one partition
+        and stays ordered. It gets the same batching, retry and dead-letter handling as the data
+        streams.
+
+        Returns:
+            ``True`` if the alert was queued, ``False`` if it went straight to the DLQ (no
+            ``entity_id``, not serialisable, or larger than the topic allows).
+        """
+        entity = alert.get("entity_id")
+        key = None if entity is None else str(entity)
+        try:
+            value = json.dumps(alert, separators=(",", ":")).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            self._dead_letter_raw(
+                topic=self._alerts_topic,
+                key=key,
+                source_type="alert",
+                raw={"event_id": alert.get("event_id"), "entity_id": entity},
+                error=DLQErrorInfo(
+                    reason="validation_error",
+                    error_type=type(exc).__name__,
+                    message=f"alert is not JSON serialisable: {exc}"[:1_000],
+                ),
+            )
+            return False
+        if key is None or len(value) > self._max_bytes[self._alerts_topic]:
+            too_big = key is not None
+            self._dead_letter_raw(
+                topic=self._alerts_topic,
+                key=key,
+                source_type="alert",
+                raw=value,
+                error=DLQErrorInfo(
+                    reason="message_too_large" if too_big else "validation_error",
+                    error_type="MessageTooLarge" if too_big else "InvalidAlert",
+                    message=(
+                        f"{len(value)} bytes exceeds max.message.bytes"
+                        if too_big
+                        else "alert needs an entity_id"
+                    ),
+                ),
+            )
+            return False
+        pending = _Pending(topic=self._alerts_topic, key=key, value=value, source_type="alert")
+        with self._lock:
+            self._in_flight += 1
+        self._produce(pending)
+        return True
 
     def pump(self, timeout: float = 0.0) -> int:
         """Run delivery callbacks and re-send retries that are due.
