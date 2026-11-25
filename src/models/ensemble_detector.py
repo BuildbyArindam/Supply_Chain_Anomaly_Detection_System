@@ -43,6 +43,7 @@ usable members means the fallback is used for that event.
 
 from __future__ import annotations
 
+import copy
 import math
 import threading
 import uuid
@@ -512,6 +513,47 @@ class MetaLearner:
         )
         return report
 
+    def continue_fit(
+        self,
+        features: np.ndarray,
+        y: np.ndarray,
+        *,
+        sample_weight: np.ndarray | None = None,
+        n_estimators: int = 30,
+    ) -> MetaLearner:
+        """Return a copy that has boosted ``n_estimators`` more trees on new labelled rows.
+
+        This is the "recalibrate without a full retrain" path of the feedback loop (Day 16): the
+        existing trees are kept (LightGBM ``init_model``) and the new trees correct what the
+        analyst feedback shows. ``self`` is not modified, so the caller can validate the successor
+        and swap it in (or discard it). The operating threshold is carried over unchanged.
+
+        Args:
+            features: ``(n, 10)`` meta-feature matrix (NaN for a missing value).
+            y: Boolean labels (``True`` = real anomaly).
+            sample_weight: Optional per-row weights (feedback recency / class balance).
+            n_estimators: Extra trees to add.
+
+        Raises:
+            RuntimeError: The learner is not fitted.
+            ValueError: Bad shapes, or only one class present.
+        """
+        if self._model is None:
+            raise RuntimeError("MetaLearner is not fitted")
+        matrix = self._check(features, y)
+        labels = np.asarray(y, dtype=bool).astype(int)
+        if len(np.unique(labels)) < 2:
+            raise ValueError("continue_fit needs both classes in the labels")
+        if n_estimators < 1:
+            raise ValueError("n_estimators must be at least 1")
+        successor = copy.deepcopy(self)
+        successor.params["n_estimators"] = n_estimators
+        model = successor._new_model()
+        successor.params["n_estimators"] = self.params["n_estimators"]
+        model.fit(matrix, labels, sample_weight=sample_weight, init_model=self._model.booster_)
+        successor._model = model
+        return successor
+
     def predict_proba(self, features: np.ndarray) -> np.ndarray:
         """Return the anomaly probability of each row.
 
@@ -835,6 +877,9 @@ class EnsembleDetector:
                 "members_missing": [n for n in MEMBERS if n not in usable and n not in warming],
                 "members_warming_up": warming,
                 "warming_up": not usable and bool(warming),
+                # The stacker's input row (None = missing): the feedback loop (Day 16) stores it
+                # with an analyst verdict so the stacker can later learn from the verdict.
+                "meta_features": [None if math.isnan(v) else float(v) for v in row],
             },
         )
 

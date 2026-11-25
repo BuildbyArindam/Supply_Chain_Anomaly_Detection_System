@@ -409,6 +409,14 @@ class FeedbackConfig(_Section):
     missed_tp_threshold_lower: float = Field(default=0.05, ge=0)
     recalibrate_every_minutes: int = Field(default=30, ge=1)
     recalibrate_after_events: int = Field(default=50, ge=1)
+    max_threshold_raise: float = Field(default=0.3, ge=0, lt=0.5)  # cap on the total raise
+    max_threshold_lower: float = Field(default=0.2, ge=0, lt=0.5)  # cap on the total lowering
+    recalibrate_min_events: int = Field(default=20, ge=2)  # labelled rows needed to refit
+    recalibrate_new_trees: int = Field(default=30, ge=1)  # trees added to the meta-learner
+    recalibrate_max_threshold_shift: float = Field(default=0.1, ge=0, le=0.5)
+    drift_delta: float = Field(default=0.1, ge=0)  # Page-Hinkley tolerated change
+    drift_threshold: float = Field(default=8.0, gt=0)  # Page-Hinkley alarm level (lambda)
+    drift_min_samples: int = Field(default=30, ge=2)
 
 
 class RetrainingConfig(_Section):

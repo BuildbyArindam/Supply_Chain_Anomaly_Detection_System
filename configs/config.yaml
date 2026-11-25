@@ -205,6 +205,14 @@ feedback:
   missed_tp_threshold_lower: 0.05
   recalibrate_every_minutes: 30
   recalibrate_after_events: 50
+  max_threshold_raise: 0.3 # total raise one entity's threshold can accumulate
+  max_threshold_lower: 0.2 # total lowering one entity's threshold can accumulate
+  recalibrate_min_events: 20 # labelled feedback rows needed before the meta-learner is refit
+  recalibrate_new_trees: 30 # trees boosted on top of the existing meta-learner
+  recalibrate_max_threshold_shift: 0.1 # max move of the meta-learner threshold per run
+  drift_delta: 0.1 # Page-Hinkley: ~a third of the smallest FP-rate shift worth reacting to
+  drift_threshold: 8.0 # Page-Hinkley: alarm level (lambda)
+  drift_min_samples: 30 # verdicts needed before drift can be flagged
 
 retraining:
   check_interval_minutes: 15

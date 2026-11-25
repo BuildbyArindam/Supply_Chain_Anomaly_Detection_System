@@ -130,6 +130,7 @@ async def run(cfg: AppConfig, args: argparse.Namespace) -> int:
     gc.freeze()
 
     producer = KafkaProducerManager.from_config(kafka_cfg)
+    service.model_health_publisher = producer.send_model_health  # feedback-drift alerts
     overrides: dict[str, Any] = {}
     if args.workers is not None:
         overrides["num_workers"] = args.workers

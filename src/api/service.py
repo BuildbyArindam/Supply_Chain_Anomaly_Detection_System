@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -31,15 +32,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 from src.api.anomaly_store import AnomalyStore
-from src.api.feedback_store import FeedbackRecord, FeedbackStore
+from src.api.feedback_store import FeedbackStore
 from src.api.schemas import AnomalyDetectionResponse, FeedbackRequest, SensorEventRequest
 from src.kafka.feature_cache import FeatureCache
 from src.kafka.schemas import KafkaMessage
 from src.kafka.stream_processor import UpdateOutcome, WindowedAggregator
 from src.models.ensemble_detector import (
+    BOUNDARY,
     ISOLATION_FOREST,
     LSTM_AUTOENCODER,
     LSTM_CLASSIFIER,
+    MEMBERS,
     STATISTICAL,
     AlertDeduplicator,
     AnomalyEvent,
@@ -51,6 +54,16 @@ from src.models.ensemble_detector import (
     build_anomaly_event,
 )
 from src.models.feature_engineering import FeaturePipeline
+from src.models.feedback_loop import (
+    EnsembleRecalibrator,
+    FeedbackDriftDetector,
+    FeedbackEvent,
+    FeedbackProcessor,
+    ThresholdCalibrator,
+)
+from src.models.feedback_loop import (
+    FeedbackStore as FeedbackEventStore,
+)
 from src.models.model_registry import ModelRegistry
 from src.models.statistical_detector import (
     CUSUMDetector,
@@ -90,6 +103,23 @@ class Evaluation:
     severity: SeverityResult | None
     alert: AnomalyEvent | None
     suppressed: bool
+
+
+@dataclass(frozen=True)
+class FeedbackOutcome:
+    """The result of :meth:`InferenceService.record_feedback`.
+
+    Attributes:
+        event: The stored verdict.
+        replaced: This analyst had already given the same kind of verdict on the alert.
+        threshold_adjustment: The entity's threshold adjustment after the verdict (labels only).
+        drift_alert_id: Id of the drift alert this verdict triggered, if any.
+    """
+
+    event: FeedbackEvent
+    replaced: bool
+    threshold_adjustment: float | None = None
+    drift_alert_id: str | None = None
 
 
 class EventNotFoundError(LookupError):
@@ -336,6 +366,30 @@ class InferenceService:
         self.dedup = AlertDeduplicator.from_config(cfg.alerts)
         self._lock = threading.RLock()  # serialises the stateful detectors / aggregator
 
+        # Feedback loop (Day 16): verdicts -> per-entity thresholds, ensemble recalibration, drift.
+        #: Receives ``ModelDriftAlert.to_dict()`` (normally ``producer.send_model_health``).
+        self.model_health_publisher: Callable[[dict[str, Any]], Any] | None = None
+        self.feedback_events = FeedbackEventStore()
+        self.calibrator = ThresholdCalibrator.from_config(cfg.feedback)
+        self.drift_detector = FeedbackDriftDetector.from_config(
+            cfg.feedback, publisher=self._publish_model_health
+        )
+        self.recalibrator = EnsembleRecalibrator.from_config(
+            cfg.feedback,
+            lambda: self.models.active.ensembles,
+            self.feedback_events,
+            registry=self.registry,
+        )
+        self.feedback_processor = FeedbackProcessor(
+            self.feedback_events,
+            self.calibrator,
+            recalibrator=self.recalibrator,
+            drift_detector=self.drift_detector,
+        )
+        # meta-feature rows of recent alerts, so a later verdict can train the meta-learner
+        self._alert_context: OrderedDict[str, list[float | None]] = OrderedDict()
+        self._alert_context_capacity = cfg.inference.anomaly_store_capacity
+
     # ------------------------------------------------------------------ #
     # Lifecycle
     # ------------------------------------------------------------------ #
@@ -357,7 +411,8 @@ class InferenceService:
         """Load models and restore persisted alerts and feedback."""
         self.models.load()
         restored = self.anomaly_store.load_snapshot(self.anomaly_snapshot_path)
-        feedback = self.feedback_store.load(self.feedback_path)
+        feedback = self._restore_feedback()
+        self.recalibrator.start()
         _log.info(
             "inference_service_started",
             degraded=self.models.active.degraded,
@@ -367,9 +422,10 @@ class InferenceService:
 
     def stop(self) -> None:
         """Persist alerts and feedback (best effort: a failed save is logged, not raised)."""
+        self.recalibrator.stop()
         for label, save in (
             ("anomalies", lambda: self.anomaly_store.snapshot(self.anomaly_snapshot_path)),
-            ("feedback", lambda: self.feedback_store.save(self.feedback_path)),
+            ("feedback", lambda: self.feedback_events.save(self.feedback_path)),
         ):
             try:
                 save()
@@ -406,6 +462,7 @@ class InferenceService:
                 self.cache.store_features(window.entity_id, window, self.cfg.features.cache_ttl_s)
             vector = self.pipeline.process(entity_id)
             score = ensemble.detect(entity_id, event=raw, vector=vector)
+            self._apply_calibration(entity_id, score)
 
             alert = None
             suppressed = False
@@ -420,6 +477,7 @@ class InferenceService:
                     suppressed = True
                 else:
                     self.anomaly_store.add(alert)
+                    self._remember_alert_context(alert.event_id, score.details)
         return Evaluation(
             score=score, outcome=outcome, severity=severity, alert=alert, suppressed=suppressed
         )
@@ -455,34 +513,129 @@ class InferenceService:
         )
 
     # ------------------------------------------------------------------ #
-    # Feedback
+    # Feedback (Day 14 verdicts; Day 16 calibration, recalibration and drift)
     # ------------------------------------------------------------------ #
-    def record_feedback(self, request: FeedbackRequest) -> tuple[FeedbackRecord, bool]:
-        """Store a verdict, flag the alert and tell the feature pipeline.
+    def _apply_calibration(self, entity_id: str, score: EnsembleAnomalyScore) -> None:
+        """Re-decide ``score`` against the entity's calibrated threshold (in place).
+
+        The ensemble decides at the 0.5 boundary; analyst feedback moves that boundary per
+        entity (:class:`ThresholdCalibrator`). A raised threshold suppresses marginal alerts, a
+        lowered one lets marginal events through. The score itself is left as it was.
+        """
+        threshold = self.calibrator.get_adjusted_threshold(entity_id, BOUNDARY)
+        if threshold == BOUNDARY:
+            return
+        score.details["calibrated_threshold"] = threshold
+        if score.is_anomaly and score.ensemble_score < threshold:
+            score.is_anomaly = False
+            score.predicted_anomaly_type = None
+            score.details["suppressed_by_calibration"] = True
+        elif not score.is_anomaly and score.ensemble_score >= threshold:
+            score.is_anomaly = True
+            score.predicted_anomaly_type = next(
+                (m.anomaly_type for m in score.members.values() if m.anomaly_type), "point"
+            )
+            score.details["raised_by_calibration"] = True
+
+    def _remember_alert_context(self, event_id: str, details: Mapping[str, Any]) -> None:
+        row = details.get("meta_features")
+        if row is None:
+            return
+        self._alert_context[event_id] = list(row)
+        while len(self._alert_context) > self._alert_context_capacity:
+            self._alert_context.popitem(last=False)
+
+    @staticmethod
+    def _fallback_meta_row(event: AnomalyEvent) -> list[float | None]:
+        """Meta-feature row rebuilt from a stored alert (confidences / rate unknown)."""
+        row: list[float | None] = [None] * (2 * len(MEMBERS) + 2)
+        for i, name in enumerate(MEMBERS):
+            if name in event.individual_scores:
+                row[i] = float(event.individual_scores[name])
+        row[-1] = float(event.timestamp.hour)
+        return row
+
+    def _publish_model_health(self, payload: dict[str, Any]) -> None:
+        publisher = self.model_health_publisher
+        if publisher is not None:
+            publisher(payload)
+
+    def _restore_feedback(self) -> int:
+        """Load stored verdicts, rebuild the calibrator and the Day 14 statistics from them."""
+        self.feedback_events.attach(self.feedback_path)
+        loaded = self.feedback_events.load()
+        self.feedback_processor.restore()
+        for event in self.feedback_events.all():
+            if not event.is_label:
+                continue
+            row = event.meta_features or ()
+            flagged = tuple(sorted(m for m, v in zip(MEMBERS, row, strict=False) if v and v >= 0.5))
+            self.feedback_store.add(
+                anomaly_event_id=event.anomaly_event_id,
+                entity_id=event.entity_id,
+                feedback_type=event.feedback_type,
+                analyst_id=event.analyst_id,
+                severity=event.original_severity or "",
+                flagged_by=flagged,
+                notes=event.notes,
+                timestamp=event.timestamp,
+            )
+        return loaded
+
+    def record_feedback(self, request: FeedbackRequest) -> FeedbackOutcome:
+        """Store a verdict, learn from it, flag the alert and tell the feature pipeline.
 
         Returns:
-            ``(record, replaced_previous)``.
+            The stored event and what the loop did with it.
 
         Raises:
-            EventNotFoundError: The alert is unknown or has been evicted from the store.
+            EventNotFoundError: The alert is unknown or evicted (a missed detection with an
+                ``entity_id`` is accepted for an unknown alert).
+            FeedbackValidationError: The verdict is malformed.
         """
-        event = self.anomaly_store.get(request.anomaly_event_id)
-        if event is None:
-            raise EventNotFoundError(request.anomaly_event_id)
-        is_fp = request.feedback_type == "false_positive"
-        flagged_by = tuple(sorted(m for m, s in event.individual_scores.items() if s >= 0.5))
-        record, replaced = self.feedback_store.add(
-            anomaly_event_id=event.event_id,
-            entity_id=event.entity_id,
-            feedback_type=request.feedback_type,
-            analyst_id=request.analyst_id,
-            severity=event.severity.name,
-            flagged_by=flagged_by,
+        alert = self.anomaly_store.get(request.anomaly_event_id)
+        if alert is None:
+            if not (request.missed_detection and request.entity_id):
+                raise EventNotFoundError(request.anomaly_event_id)
+            entity_id, original_severity, row = request.entity_id, None, None
+        else:
+            entity_id = alert.entity_id
+            original_severity = alert.severity.name
+            row = self._alert_context.get(alert.event_id) or self._fallback_meta_row(alert)
+
+        event = FeedbackEvent.create(
+            request.anomaly_event_id,
+            request.analyst_id,
+            request.feedback_type,
+            corrected_severity=request.corrected_severity,
             notes=request.notes,
+            entity_id=entity_id,
+            missed=request.missed_detection,
+            original_severity=original_severity,
+            meta_features=None if row is None else tuple(row),
         )
-        self.anomaly_store.set_flags(event.event_id, false_positive=is_fp)
-        if not replaced:
-            # The history keeps only counters, which cannot be un-counted: a changed verdict from
-            # the same analyst updates the store and the flag but is not counted twice.
-            self.pipeline.record_feedback(event.entity_id, false_positive=is_fp)
-        return record, replaced
+        result = self.feedback_processor.process(event)  # validates before anything changes
+
+        if alert is not None and event.is_label:
+            is_fp = event.is_false_positive
+            flagged_by = tuple(sorted(m for m, s in alert.individual_scores.items() if s >= 0.5))
+            _, replaced = self.feedback_store.add(
+                anomaly_event_id=alert.event_id,
+                entity_id=alert.entity_id,
+                feedback_type=request.feedback_type,
+                analyst_id=request.analyst_id,
+                severity=alert.severity.name,
+                flagged_by=flagged_by,
+                notes=request.notes,
+            )
+            self.anomaly_store.set_flags(alert.event_id, false_positive=is_fp)
+            if not replaced:
+                # The history keeps only counters, which cannot be un-counted: a changed verdict
+                # from the same analyst updates the store and the flag but is not counted twice.
+                self.pipeline.record_feedback(alert.entity_id, false_positive=is_fp)
+        return FeedbackOutcome(
+            event=result.event,
+            replaced=result.replaced is not None,
+            threshold_adjustment=result.threshold_adjustment,
+            drift_alert_id=result.drift_alert.alert_id if result.drift_alert else None,
+        )

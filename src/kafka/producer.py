@@ -285,6 +285,7 @@ class KafkaProducerManager:
         }
         self._dlq_topic = topics.dlq_events.name
         self._alerts_topic = topics.anomaly_alerts.name
+        self._health_topic = topics.model_health.name
         self._max_bytes: dict[str, int] = {
             topic.name: topic.max_message_bytes for topic in topics.as_list()
         }
@@ -471,6 +472,54 @@ class KafkaProducerManager:
             )
             return False
         pending = _Pending(topic=self._alerts_topic, key=key, value=value, source_type="alert")
+        with self._lock:
+            self._in_flight += 1
+        self._produce(pending)
+        return True
+
+    def send_model_health(self, event: Mapping[str, Any]) -> bool:
+        """Publish one model-health event (for example ``ModelDriftAlert.to_dict()``).
+
+        The ``model-health`` topic has a single partition and low volume, so the record is keyed
+        by its ``event_type`` and gets the same batching, retry and dead-letter handling as the
+        data streams.
+
+        Returns:
+            ``True`` if the event was queued, ``False`` if it went straight to the DLQ (not
+            serialisable, or larger than the topic allows).
+        """
+        key = str(event.get("event_type") or "model-health")
+        try:
+            value = json.dumps(event, separators=(",", ":")).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            self._dead_letter_raw(
+                topic=self._health_topic,
+                key=key,
+                source_type="model_health",
+                raw={"event_type": key},
+                error=DLQErrorInfo(
+                    reason="validation_error",
+                    error_type=type(exc).__name__,
+                    message=f"model-health event is not JSON serialisable: {exc}"[:1_000],
+                ),
+            )
+            return False
+        if len(value) > self._max_bytes[self._health_topic]:
+            self._dead_letter_raw(
+                topic=self._health_topic,
+                key=key,
+                source_type="model_health",
+                raw=value,
+                error=DLQErrorInfo(
+                    reason="message_too_large",
+                    error_type="MessageTooLarge",
+                    message=f"{len(value)} bytes exceeds max.message.bytes",
+                ),
+            )
+            return False
+        pending = _Pending(
+            topic=self._health_topic, key=key, value=value, source_type="model_health"
+        )
         with self._lock:
             self._in_flight += 1
         self._produce(pending)

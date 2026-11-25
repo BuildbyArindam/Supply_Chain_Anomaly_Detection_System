@@ -7,6 +7,7 @@ Endpoints (OpenAPI docs at ``/docs``):
 * ``POST /api/v1/predict``, ``POST /api/v1/batch-predict`` - score events
 * ``GET  /api/v1/anomalies``, ``GET /api/v1/anomalies/{event_id}`` - recent alerts
 * ``POST /api/v1/feedback``, ``GET /api/v1/feedback/stats`` - analyst feedback
+* ``GET  /api/v1/feedback/analytics``, ``POST /api/v1/feedback/recalibrate`` - feedback loop
 * ``GET  /api/v1/models``, ``/models/current``, ``POST /models/reload`` - model versions, hot swap
 * ``GET  /health`` - liveness / readiness, ``GET /metrics`` - Prometheus
 
@@ -18,6 +19,7 @@ config, a registry or a ready-made :class:`~src.api.service.InferenceService`.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -67,6 +69,7 @@ def create_app(
     service: InferenceService | None = None,
     metrics_registry: CollectorRegistry | None = None,
     kafka_check: Callable[[], bool] | None = None,
+    model_health_publisher: Callable[[dict[str, Any]], Any] | None = None,
     trust_forwarded_for: bool = False,
 ) -> FastAPI:
     """Build the FastAPI application.
@@ -78,12 +81,17 @@ def create_app(
         metrics_registry: Prometheus registry for the API series and ``/metrics`` (default:
             the process-wide registry, which also carries the Kafka consumer series).
         kafka_check: Optional callable reporting Kafka connectivity for ``/health``.
+        model_health_publisher: Receives the drift alerts of the feedback loop (normally
+            ``KafkaProducerManager.send_model_health``); keeps what the service already has if
+            omitted.
         trust_forwarded_for: Rate-limit by ``X-Forwarded-For`` (only behind a trusted proxy).
     """
     cfg = config or get_config()
     reg = metrics_registry if metrics_registry is not None else REGISTRY
     api_metrics = ApiMetrics(reg)
     svc = service or InferenceService(cfg, registry)
+    if model_health_publisher is not None:
+        svc.model_health_publisher = model_health_publisher
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -197,10 +205,33 @@ def create_app(
     return app
 
 
+def _lazy_model_health_publisher(cfg: AppConfig) -> Callable[[dict[str, Any]], bool]:
+    """Publish to the ``model-health`` topic through a producer created on first use.
+
+    Drift alerts are rare, so the API process does not hold a Kafka producer until one is needed
+    (and starting without a broker stays fine).
+    """
+    producer: Any = None
+    lock = threading.Lock()
+
+    def publish(payload: dict[str, Any]) -> bool:
+        nonlocal producer
+        with lock:
+            if producer is None:
+                from src.kafka.producer import KafkaProducerManager
+
+                producer = KafkaProducerManager.from_config(cfg.kafka)
+            sent = producer.send_model_health(payload)
+            producer.flush(timeout=5.0)
+        return bool(sent)
+
+    return publish
+
+
 def _default_app() -> FastAPI:
     cfg = get_config()
     configure_logging(cfg.logging.level, cfg.logging.format, cfg.logging.service_name)
-    return create_app(cfg)
+    return create_app(cfg, model_health_publisher=_lazy_model_health_publisher(cfg))
 
 
 #: ASGI entry point: ``uvicorn src.api.main:app``.

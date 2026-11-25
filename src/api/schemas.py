@@ -23,7 +23,7 @@ from src.kafka.schemas import ENTITY_ID_FIELDS, PAYLOAD_MODELS, KafkaMessage, Pa
 ScoredSource = Literal["warehouse", "vehicle", "inventory"]
 SeverityName = Literal["INFO", "WARNING", "CRITICAL", "EMERGENCY"]
 AnomalyTypeName = Literal["point", "contextual", "collective"]
-FeedbackType = Literal["false_positive", "true_positive"]
+FeedbackType = Literal["false_positive", "true_positive", "severity_adjustment"]
 
 MAX_BATCH_SIZE: Final = 100
 
@@ -254,11 +254,35 @@ class FeedbackRequest(_ApiModel):
     feedback_type: FeedbackType
     analyst_id: str = Field(default="anonymous", min_length=1, max_length=64)
     notes: str | None = Field(default=None, max_length=1000)
+    corrected_severity: SeverityName | None = Field(
+        default=None, description="The right severity; required for ``severity_adjustment``."
+    )
+    missed_detection: bool = Field(
+        default=False,
+        description=(
+            "``true_positive`` only: the system did NOT alert on a real anomaly. Needs "
+            "``entity_id`` when ``anomaly_event_id`` is not a stored alert."
+        ),
+    )
+    entity_id: str | None = Field(
+        default=None, min_length=1, max_length=128, description="Only for a missed detection."
+    )
 
     @field_validator("notes")
     @classmethod
     def _strip_notes(cls, value: str | None) -> str | None:
         return value.strip() or None if value is not None else None
+
+    @model_validator(mode="after")
+    def _check_combination(self) -> Self:
+        if self.feedback_type == "severity_adjustment":
+            if self.corrected_severity is None:
+                raise ValueError("corrected_severity is required for a severity_adjustment")
+        elif self.corrected_severity is not None:
+            raise ValueError("corrected_severity only applies to a severity_adjustment")
+        if self.missed_detection and self.feedback_type != "true_positive":
+            raise ValueError("missed_detection only applies to a true_positive")
+        return self
 
 
 class FeedbackResponse(_ApiModel):
@@ -273,6 +297,15 @@ class FeedbackResponse(_ApiModel):
     timestamp: datetime
     replaced_previous: bool = Field(
         description="True when this analyst had already rated the alert (verdict replaced)."
+    )
+    corrected_severity: SeverityName | None = None
+    missed_detection: bool = False
+    threshold_adjustment: float | None = Field(
+        default=None,
+        description="The entity's decision-threshold adjustment after this verdict (labels only).",
+    )
+    drift_alert_id: str | None = Field(
+        default=None, description="Set when this verdict made the drift detector fire."
     )
 
 
