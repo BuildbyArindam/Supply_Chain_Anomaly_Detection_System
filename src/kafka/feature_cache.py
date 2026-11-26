@@ -172,6 +172,19 @@ class FeatureCache:
         self._record(bool(items))
         return items
 
+    def peek(
+        self, entity_id: str, n_windows: int = 1, window_seconds: int | None = None
+    ) -> list[WindowedFeatures]:
+        """Return up to ``n_windows`` most recent features, oldest first, without counting.
+
+        For monitoring (the dashboard): unlike :meth:`get_history` this is not recorded as a hit
+        or miss, so polling does not distort :attr:`hit_ratio` or the cache-hit metric.
+        """
+        if n_windows <= 0:
+            return []
+        history = self._history(entity_id, window_seconds)
+        return list(history)[-n_windows:] if history else []
+
     def get_all_windows(self, entity_id: str) -> dict[int, WindowedFeatures]:
         """Return the latest features of every window length of the entity."""
         with self._lock:

@@ -39,6 +39,7 @@ addopts = "-ra --strict-markers"
 markers = [
     "integration: needs external services such as Kafka (deselect with -m 'not integration')",
     "performance: load test that runs for about 30 s (deselect with -m 'not performance')",
+    "browser: needs Playwright and a Chromium build (deselect with -m 'not browser')",
 ]
 
 [tool.mypy]

@@ -9,6 +9,8 @@ Endpoints (OpenAPI docs at ``/docs``):
 * ``POST /api/v1/feedback``, ``GET /api/v1/feedback/stats`` - analyst feedback
 * ``GET  /api/v1/feedback/analytics``, ``POST /api/v1/feedback/recalibrate`` - feedback loop
 * ``GET  /api/v1/models``, ``/models/current``, ``POST /models/reload`` - model versions, hot swap
+* ``GET  /api/v1/stream/alerts`` - live alerts as Server-Sent Events (Day 18)
+* ``GET  /api/v1/telemetry/entities``, ``/telemetry/{entity_id}`` - live readings (Day 18)
 * ``GET  /health`` - liveness / readiness, ``GET /metrics`` - Prometheus
 
 Middleware, outermost first: request id, metrics, rate limiting, CORS, GZip.
@@ -34,9 +36,10 @@ from prometheus_client import REGISTRY, CollectorRegistry, make_asgi_app
 
 from src.api.middleware.rate_limiter import RateLimitMiddleware
 from src.api.middleware.request_context import ApiMetrics, MetricsMiddleware, RequestIDMiddleware
-from src.api.routers import detection, feedback, models
+from src.api.routers import detection, feedback, models, telemetry
 from src.api.schemas import HealthResponse
 from src.api.service import InferenceService
+from src.dashboard.sse_server import install_alert_stream
 from src.models.model_registry import ModelRegistry
 from src.utils.config import AppConfig, get_config
 from src.utils.logger import configure_logging, get_logger
@@ -58,6 +61,8 @@ _TAGS = [
     {"name": "detection", "description": "Score events and query alerts."},
     {"name": "feedback", "description": "Analyst verdicts on alerts."},
     {"name": "models", "description": "Model versions and hot reload."},
+    {"name": "stream", "description": "Live alerts as Server-Sent Events."},
+    {"name": "telemetry", "description": "Latest and recent readings per entity."},
     {"name": "ops", "description": "Health and metrics."},
 ]
 
@@ -101,6 +106,7 @@ def create_app(
         try:
             yield
         finally:
+            app.state.alert_broker.close()  # end the SSE streams so shutdown is not held up
             svc.stop()  # persists alerts and feedback
             _log.info("api_stopped")
 
@@ -144,6 +150,8 @@ def create_app(
     app.include_router(detection.router)
     app.include_router(feedback.router)
     app.include_router(models.router)
+    app.include_router(telemetry.router)
+    install_alert_stream(app, svc.anomaly_store, max_connections=cfg.dashboard.max_sse_connections)
     app.mount("/metrics", make_asgi_app(registry=reg))
 
     @app.get("/health", response_model=HealthResponse, tags=["ops"], summary="Health check")

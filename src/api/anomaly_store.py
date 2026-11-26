@@ -18,6 +18,7 @@ import os
 import tempfile
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -55,19 +56,53 @@ class AnomalyStore:
         self._snapshot_thread: threading.Thread | None = None
         self._snapshot_stop = threading.Event()
         self._snapshot_path: Path | None = None
+        self._listeners: list[Callable[[AnomalyEvent], None]] = []
 
     def __len__(self) -> int:
         with self._lock:
             return len(self._events)
 
-    def add(self, event: AnomalyEvent) -> None:
-        """Insert (or replace, e.g. after an escalation) an alert; evict the oldest if full."""
+    def subscribe(self, listener: Callable[[AnomalyEvent], None]) -> Callable[[], None]:
+        """Call ``listener(event)`` for every alert added from now on (Day 18, SSE feed).
+
+        Listeners run on the thread that called :meth:`add`, after the store lock is released,
+        so they must be quick and must not block. An exception in a listener is logged and
+        never reaches the caller: alerting must not depend on a subscriber. Subscribing the
+        same callable twice has no effect.
+
+        Returns:
+            A function that removes the listener again.
+        """
+        with self._lock:
+            if listener not in self._listeners:
+                self._listeners.append(listener)
+
+        def unsubscribe() -> None:
+            with self._lock:
+                if listener in self._listeners:
+                    self._listeners.remove(listener)
+
+        return unsubscribe
+
+    def add(self, event: AnomalyEvent, *, notify: bool = True) -> None:
+        """Insert (or replace, e.g. after an escalation) an alert; evict the oldest if full.
+
+        Args:
+            event: The alert.
+            notify: Tell the subscribers; ``False`` when restoring a snapshot.
+        """
         with self._lock:
             self._events[event.event_id] = event
             self._events.move_to_end(event.event_id)
             while len(self._events) > self.capacity:
                 self._events.popitem(last=False)
                 self._evicted += 1
+            listeners = list(self._listeners) if notify else []
+        for listener in listeners:
+            try:
+                listener(event)
+            except Exception as error:  # noqa: BLE001 - a subscriber must never block alerting
+                _log.error("anomaly_listener_failed", event_id=event.event_id, error=repr(error))
 
     def get(self, event_id: str) -> AnomalyEvent | None:
         """Return one alert, or ``None`` if unknown or already evicted."""
@@ -223,7 +258,7 @@ class AnomalyStore:
         loaded = 0
         for record in data.get("events", []):
             try:
-                self.add(AnomalyEvent.from_dict(record))
+                self.add(AnomalyEvent.from_dict(record), notify=False)
                 loaded += 1
             except (KeyError, ValueError, TypeError) as error:
                 _log.warning("anomaly_snapshot_record_skipped", error=repr(error))

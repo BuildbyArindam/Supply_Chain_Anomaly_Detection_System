@@ -27,6 +27,7 @@ seaborn==0.13.2
 # --- Visualisation / dashboard -----------------------------------------------
 plotly==7.1.0
 dash==4.5.0
+dash-bootstrap-components==2.0.4
 
 # --- API ---------------------------------------------------------------------
 fastapi==0.165.0
@@ -42,7 +43,8 @@ prometheus-client==0.26.0
 # --- Dev tooling -------------------------------------------------------------
 pytest==9.2.0
 pytest-cov==7.1.0
-httpx==0.28.1  # API tests (httpx.AsyncClient + ASGITransport)
+httpx==0.28.1  # API tests + the dashboard's HttpSource
+playwright==1.65.2  # dashboard smoke test; then: playwright install chromium
 black==26.10.1
 ruff==0.17.5
 mypy==2.4.1
