@@ -28,6 +28,8 @@ if the core sections fail; the poller backs off (1 s, 2 s, ... 10 s) and recover
 
 from __future__ import annotations
 
+import math
+import os
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -53,6 +55,26 @@ DEFAULT_LATENCY_TARGET_MS: Final = 500.0
 KAFKA_LAG_WARN: Final = 1_000
 KAFKA_LAG_CRITICAL: Final = 10_000
 MAX_BACKOFF_S: Final = 10.0
+#: Days of feedback the model-health page charts (the trend line and the volume heatmap).
+FEEDBACK_DAYS: Final = 7
+#: Fewest verdicts an entity needs to appear in the "noisiest entities" ranking (a single false
+#: positive on a single verdict is a 100 % rate and says nothing).
+MIN_ENTITY_VERDICTS: Final = 3
+#: Registry metric names tried, in order, for the F1 / precision / recall of a model.
+F1_KEYS: Final[tuple[str, ...]] = ("f1", "f1_score", "anomaly_f1", "weighted_f1", "macro_f1")
+PRECISION_KEYS: Final[tuple[str, ...]] = ("precision", "anomaly_precision", "weighted_precision")
+RECALL_KEYS: Final[tuple[str, ...]] = ("recall", "anomaly_recall", "weighted_recall")
+#: Model families of the comparison chart, in display order.
+MODEL_FAMILIES: Final[tuple[str, ...]] = (
+    "statistical",
+    "isolation_forest",
+    "lstm_autoencoder",
+    "lstm_classifier",
+    "ensemble",
+)
+ANOMALY_TYPES: Final[tuple[str, ...]] = ("point", "contextual", "collective")
+#: Environment variable holding the API's admin key (sent as ``X-API-Key`` for promote / reject).
+ADMIN_KEY_ENV: Final = "API_ADMIN_KEY"
 #: Most SKUs the inventory page reads history for (one request each).
 MAX_INVENTORY_SKUS: Final = 100
 #: Fields of an alert kept in the browser-side ``anomaly-store`` (details are fetched on click).
@@ -94,6 +116,31 @@ def _is_active(alert: Mapping[str, Any]) -> bool:
     return not alert.get("is_resolved") and not alert.get("false_positive_marked")
 
 
+def _metric(metrics: Mapping[str, Any], keys: Sequence[str]) -> float | None:
+    """First finite numeric value among ``keys`` of a saved-metrics dict, else ``None``."""
+    for key in keys:
+        value = metrics.get(key)
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            continue
+        if math.isfinite(float(value)):
+            return float(value)
+    return None
+
+
+def _mean_metric(rows: Sequence[Mapping[str, Any]], keys: Sequence[str]) -> float | None:
+    """Mean of :func:`_metric` over the rows that have it (``None`` if none does)."""
+    values = [v for v in (_metric(row, keys) for row in rows) if v is not None]
+    return sum(values) / len(values) if values else None
+
+
+def _model_family(model_type: str) -> str | None:
+    """Map a registry model type (``isolation_forest_warehouse``, ...) to its comparison family."""
+    for family in MODEL_FAMILIES:
+        if model_type == family or model_type.startswith(f"{family}_"):
+            return family
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # Sources
 # --------------------------------------------------------------------------- #
@@ -127,6 +174,15 @@ class DashboardSource(Protocol):
     def submit_feedback(self, body: dict[str, Any]) -> dict[str, Any]:
         """Post one analyst verdict (``FeedbackRequest`` fields); raises when it is rejected."""
 
+    def feedback_timeline(self, days: int) -> dict[str, Any]:
+        """Daily false-positive rates and the day x hour feedback volume (``timeline()``)."""
+
+    def retraining(self) -> dict[str, Any]:
+        """Retraining history and the waiting challenger; ``{}`` when the API has none to offer."""
+
+    def review_challenger(self, action: str) -> dict[str, Any]:
+        """``promote`` or ``reject`` the waiting challenger; raises when it is refused."""
+
     def close(self) -> None:
         """Release resources."""
 
@@ -134,9 +190,19 @@ class DashboardSource(Protocol):
 class HttpSource:
     """Reads everything from the API over HTTP (``dashboard.api_url``)."""
 
-    def __init__(self, base_url: str, *, timeout_s: float = 3.0) -> None:
-        """Create the source; no request is made until a method is called."""
+    def __init__(
+        self, base_url: str, *, timeout_s: float = 3.0, admin_key: str | None = None
+    ) -> None:
+        """Create the source; no request is made until a method is called.
+
+        Args:
+            base_url: API base URL.
+            timeout_s: Per-request timeout.
+            admin_key: Value of ``X-API-Key`` for the admin actions (promote / reject). Default:
+                ``$API_ADMIN_KEY``.
+        """
         self.base_url = base_url.rstrip("/")
+        self._admin_key = admin_key if admin_key is not None else os.environ.get(ADMIN_KEY_ENV)
         self._client = httpx.Client(base_url=self.base_url, timeout=timeout_s)
 
     def _get(self, path: str, **params: Any) -> Any:
@@ -192,6 +258,23 @@ class HttpSource:
     def submit_feedback(self, body: dict[str, Any]) -> dict[str, Any]:
         """POST ``/api/v1/feedback``; a 4xx/5xx raises :class:`httpx.HTTPStatusError`."""
         response = self._client.post("/api/v1/feedback", json=body)
+        response.raise_for_status()
+        return response.json()  # type: ignore[no-any-return]
+
+    def feedback_timeline(self, days: int) -> dict[str, Any]:
+        """See :meth:`DashboardSource.feedback_timeline`."""
+        return self._get("/api/v1/feedback/timeline", days=days)  # type: ignore[no-any-return]
+
+    def retraining(self) -> dict[str, Any]:
+        """GET ``/api/v1/models/retraining``; ``{}`` from an API that predates it (404)."""
+        return self._get_or_none("/api/v1/models/retraining") or {}
+
+    def review_challenger(self, action: str) -> dict[str, Any]:
+        """POST ``/api/v1/models/{action}``; a 4xx/5xx raises :class:`httpx.HTTPStatusError`."""
+        if action not in ("promote", "reject"):
+            raise ValueError(f"unknown challenger action {action!r}")
+        headers = {"X-API-Key": self._admin_key} if self._admin_key else {}
+        response = self._client.post(f"/api/v1/models/{action}", headers=headers)
         response.raise_for_status()
         return response.json()  # type: ignore[no-any-return]
 
@@ -286,6 +369,29 @@ class InProcessSource:
             "replaced_previous": outcome.replaced,
         }
 
+    def feedback_timeline(self, days: int) -> dict[str, Any]:
+        """See :meth:`DashboardSource.feedback_timeline`."""
+        return self.service.feedback_processor.timeline(days)
+
+    def retraining(self) -> dict[str, Any]:
+        """See :meth:`DashboardSource.retraining` (reuses the API router's builder)."""
+        from src.api.routers.models import retraining_overview
+
+        return retraining_overview(self.service)
+
+    def review_challenger(self, action: str) -> dict[str, Any]:
+        """Promote or reject through the service; an ``HTTPException`` becomes a ``ValueError``."""
+        from fastapi import HTTPException
+
+        from src.api.routers.models import review_challenger
+
+        if action not in ("promote", "reject"):
+            raise ValueError(f"unknown challenger action {action!r}")
+        try:
+            return review_challenger(self.service, action)  # type: ignore[arg-type]
+        except HTTPException as error:
+            raise ValueError(str(error.detail)) from error
+
     def close(self) -> None:
         """Nothing to release."""
 
@@ -308,6 +414,8 @@ class DashboardSnapshot:
     feedback: Mapping[str, Any] = field(default_factory=dict)
     pipeline: Mapping[str, Any] = field(default_factory=dict)
     models: Mapping[str, Any] = field(default_factory=dict)
+    timeline: Mapping[str, Any] = field(default_factory=dict)
+    retraining: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -326,7 +434,8 @@ class DashboardDataService:
     Args:
         source: Where data comes from (:class:`HttpSource` or :class:`InProcessSource`).
         poll_interval_s: Poll tick; sections run at their own cadence (alerts, health and
-            pipeline every tick, feedback every 5 s, models every 10 s).
+            pipeline every tick, feedback, its timeline and retraining every 5 s, models every
+            10 s).
         alert_limit: Newest alerts kept in the snapshot (the trend and "today" count see these).
         active_window_hours: Alerts older than this no longer count as active.
         clock: Wall-clock function (injectable for tests).
@@ -357,6 +466,8 @@ class DashboardDataService:
             _Section("pipeline", source.pipeline, tick),
             _Section("feedback", source.feedback_analytics, max(tick, 5.0)),
             _Section("models", source.models, max(tick, 10.0)),
+            _Section("timeline", lambda: source.feedback_timeline(FEEDBACK_DAYS), max(tick, 5.0)),
+            _Section("retraining", source.retraining, max(tick, 5.0)),
         ]
         self._values: dict[str, Any] = {}
         self._errors: dict[str, str] = {}
@@ -482,6 +593,8 @@ class DashboardDataService:
             feedback=values.get("feedback", {}),
             pipeline=values.get("pipeline", {}),
             models=values.get("models", {}),
+            timeline=values.get("timeline", {}),
+            retraining=values.get("retraining", {}),
         )
 
     # ------------------------------------------------------------------ #
@@ -904,6 +1017,209 @@ class DashboardDataService:
             "current": dict(snap.models.get("current") or {}),
             "feedback_fp_rate": dict(snap.feedback.get("windows") or {}),
         }
+
+    # ------------------------------------------------------------------ #
+    # Model health page (Day 21)
+    # ------------------------------------------------------------------ #
+    def get_model_scores(self) -> dict[str, Any]:
+        """Return the evaluation scores behind the model-health gauges and per-model comparison.
+
+        The scores are the metrics training saved in the registry (held-out evaluation); a model
+        family with several registry entries (one Isolation Forest per source) is averaged. The
+        statistical detector trains online and has no registry entry unless a ``statistical``
+        model was saved, so it is ``None`` here.
+
+        Returns:
+            ``{"f1": {family: float | None}, "ensemble": {"f1", "precision", "recall"},
+            "versions": {family: n entries},
+            "live": {"precision": float | None, "verdicts": int}}``.
+            ``live`` is the analysts' verdict-based precision over the last 24 h.
+        """
+        rows: dict[str, list[Mapping[str, Any]]] = {family: [] for family in MODEL_FAMILIES}
+        for entry in self.get_model_performance()["models"]:
+            family = _model_family(str(entry["model_type"]))
+            if family is not None:
+                rows[family].append(entry["metrics"])
+        ensemble_rows = rows["ensemble"]
+        window = (self.snapshot().feedback.get("windows") or {}).get("last_24h") or {}
+        verdicts = int(window.get("total") or 0)
+        return {
+            "f1": {family: _mean_metric(rows[family], F1_KEYS) for family in MODEL_FAMILIES},
+            "ensemble": {
+                "f1": _mean_metric(ensemble_rows, F1_KEYS),
+                "precision": _mean_metric(ensemble_rows, PRECISION_KEYS),
+                "recall": _mean_metric(ensemble_rows, RECALL_KEYS),
+            },
+            "versions": {family: len(rows[family]) for family in MODEL_FAMILIES},
+            "live": {
+                "precision": (
+                    1.0 - float(window.get("false_positive_rate") or 0.0) if verdicts else None
+                ),
+                "verdicts": verdicts,
+            },
+        }
+
+    def get_anomaly_type_breakdown(self) -> dict[str, Any]:
+        """Alerts detected on the current UTC day, by anomaly type and severity.
+
+        Returns:
+            ``{"types": [...], "severities": [...], "counts": {type: {severity: n}}, "total": n}``.
+            Point, contextual and collective always appear (zero-filled); a type that is not one
+            of them is appended when it occurs.
+        """
+        snap = self.snapshot()
+        today = snap.reference_now.date()
+        counts: dict[str, dict[str, int]] = {t: dict.fromkeys(SEVERITIES, 0) for t in ANOMALY_TYPES}
+        total = 0
+        for alert in snap.alerts:
+            moment = parse_timestamp(alert.get("timestamp"))
+            severity = str(alert.get("severity", "")).upper()
+            if moment is None or moment.date() != today or severity not in SEVERITY_RANK:
+                continue
+            kind = str(alert.get("anomaly_type") or "unknown")
+            counts.setdefault(kind, dict.fromkeys(SEVERITIES, 0))[severity] += 1
+            total += 1
+        return {
+            "types": list(counts),
+            "severities": list(SEVERITIES),
+            "counts": counts,
+            "total": total,
+        }
+
+    def get_feedback_trend(self) -> list[dict[str, Any]]:
+        """One row per day of the feedback window: ``date``, ``total``, ``false_positive``, rate.
+
+        The rate is ``None`` for a day without verdicts. Empty until the API reports a timeline.
+        """
+        return [dict(row) for row in self.snapshot().timeline.get("daily") or ()]
+
+    def get_feedback_heatmap(self) -> dict[str, Any]:
+        """Return feedback volume as ``{"days": [date], "hours": [0..23], "z": [[n] per hour]}``.
+
+        ``z[hour][day]`` is the number of feedback events given in that UTC hour of that day.
+        """
+        timeline = self.snapshot().timeline
+        days = [str(row["date"]) for row in timeline.get("daily") or ()]
+        index = {day: i for i, day in enumerate(days)}
+        grid = [[0] * len(days) for _ in range(24)]
+        for cell in timeline.get("heatmap") or ():
+            column = index.get(str(cell.get("date")))
+            hour = int(cell.get("hour", -1))
+            if column is not None and 0 <= hour < 24:
+                grid[hour][column] += int(cell.get("count") or 0)
+        return {"days": days, "hours": list(range(24)), "z": grid}
+
+    def get_top_fp_entities(
+        self, n: int = 10, min_verdicts: int = MIN_ENTITY_VERDICTS
+    ) -> list[dict[str, Any]]:
+        """Entities with the highest false-positive rate in the feedback window.
+
+        Entities with fewer than ``min_verdicts`` verdicts are left out. Each row has the tallies
+        and ``threshold_adjustment``, the entity's current decision-threshold shift from the
+        feedback loop (0 if none): an entity that is noisy and still has no adjustment is the
+        first candidate for one.
+        """
+        snap = self.snapshot()
+        adjusted = snap.feedback.get("adjusted_entities") or {}
+        rows = []
+        for row in snap.timeline.get("entities") or ():
+            if int(row.get("total") or 0) < min_verdicts or not row.get("false_positive"):
+                continue
+            state = adjusted.get(row.get("entity_id")) or {}
+            rows.append(
+                {
+                    **row,
+                    "threshold_adjustment": float(state.get("current_threshold_adjustment") or 0),
+                }
+            )
+        return rows[: max(0, n)]
+
+    def get_retraining(self) -> dict[str, Any]:
+        """Retraining runs (oldest first), rollbacks and the waiting challenger.
+
+        Returns:
+            ``{"enabled", "runs", "rollbacks", "watching", "challenger"}``; ``enabled`` is false
+            when the API runs no retraining orchestrator (the page then says so).
+        """
+        raw = self.snapshot().retraining
+        runs = [
+            r
+            for r in raw.get("runs") or ()
+            if r.get("kind", "retraining_result") == "retraining_result"
+        ]
+        runs.sort(key=lambda r: str(r.get("started_at") or ""))
+        return {
+            "enabled": bool(raw.get("enabled")),
+            "runs": runs,
+            "rollbacks": list(raw.get("rollbacks") or ()),
+            "watching": list(raw.get("watching") or ()),
+            "challenger": raw.get("challenger") or None,
+        }
+
+    def get_retraining_delta(self) -> dict[str, Any] | None:
+        """Return what the latest promoted retraining run changed (``None`` if none was promoted).
+
+        Returns ``{"run_id", "finished_at", "champion_f1", "challenger_f1", "improvement",
+        "models": {name: {...same three...}}, "rolled_back": bool}``. The "baseline" is the
+        champion the run replaced; a later rollback of that run is flagged.
+        """
+        retraining = self.get_retraining()
+        promoted = [r for r in retraining["runs"] if r.get("outcome") == "promoted"]
+        if not promoted:
+            return None
+        run = promoted[-1]
+        rolled_back = any(r.get("run_id") == run.get("run_id") for r in retraining["rollbacks"])
+        return {
+            "run_id": run.get("run_id"),
+            "finished_at": run.get("finished_at"),
+            "champion_f1": run.get("champion_f1"),
+            "challenger_f1": run.get("challenger_f1"),
+            "improvement": run.get("improvement"),
+            "models": {
+                name: {
+                    key: report.get(key) for key in ("champion_f1", "challenger_f1", "improvement")
+                }
+                for name, report in (run.get("models") or {}).items()
+            },
+            "rolled_back": rolled_back,
+        }
+
+    def review_challenger(self, action: str) -> dict[str, Any]:
+        """Promote or reject the waiting challenger and say what happened.
+
+        Never raises: the page shows ``message`` whatever the outcome. The snapshot is refreshed
+        afterwards so the page drops the challenger at once.
+
+        Returns:
+            ``{"ok": bool, "action": str, "message": str}``.
+        """
+        if action not in ("promote", "reject"):
+            return {"ok": False, "action": action, "message": f"Unknown action {action!r}."}
+        done = "promoted" if action == "promote" else "rejected"
+        try:
+            self.source.review_challenger(action)
+        except httpx.HTTPStatusError as error:
+            code = error.response.status_code
+            message = {
+                401: "The API refused the request: set API_ADMIN_KEY for the dashboard.",
+                404: "No challenger is waiting for review any more.",
+                409: "The API could not apply the decision (the challenger changed).",
+            }.get(code, f"The API answered HTTP {code}.")
+            return {"ok": False, "action": action, "message": message}
+        except ValueError as error:
+            return {"ok": False, "action": action, "message": str(error)}
+        except Exception as error:  # noqa: BLE001 - a button must never crash the page
+            _log.warning("dashboard_review_failed", action=action, error=repr(error))
+            return {
+                "ok": False,
+                "action": action,
+                "message": f"Could not reach the API ({type(error).__name__}).",
+            }
+        try:
+            self.refresh()
+        except Exception as error:  # noqa: BLE001 - the decision is stored either way
+            _log.warning("dashboard_refresh_after_review_failed", error=repr(error))
+        return {"ok": True, "action": action, "message": f"Challenger {done}."}
 
     def get_status(self) -> dict[str, Any]:
         """Describe the connection state for the status strip (connected, errors, age)."""

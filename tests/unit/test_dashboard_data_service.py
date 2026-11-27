@@ -68,6 +68,10 @@ class FakeSource:
         self.feedback_row: dict[str, Any] = {}
         self.pipeline_row: dict[str, Any] = {}
         self.models_row: dict[str, Any] = {"registry": [], "current": {}}
+        self.timeline_row: dict[str, Any] = {}
+        self.retraining_row: dict[str, Any] = {}
+        self.reviewed: list[str] = []
+        self.review_error: Exception | None = None
         self.series_calls = 0
         self.posted: list[dict[str, Any]] = []
         self.reject: set[str] = set()
@@ -121,6 +125,21 @@ class FakeSource:
     def models(self) -> dict[str, Any]:
         self._maybe_fail("models")
         return self.models_row
+
+    def feedback_timeline(self, days: int) -> dict[str, Any]:
+        self._maybe_fail("timeline")
+        return self.timeline_row
+
+    def retraining(self) -> dict[str, Any]:
+        self._maybe_fail("retraining")
+        return self.retraining_row
+
+    def review_challenger(self, action: str) -> dict[str, Any]:
+        if self.review_error is not None:
+            raise self.review_error
+        self.reviewed.append(action)
+        self.retraining_row = {**self.retraining_row, "challenger": None}
+        return {"action": action}
 
     def close(self) -> None:
         self.closed = True
