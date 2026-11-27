@@ -69,6 +69,8 @@ class FakeSource:
         self.pipeline_row: dict[str, Any] = {}
         self.models_row: dict[str, Any] = {"registry": [], "current": {}}
         self.series_calls = 0
+        self.posted: list[dict[str, Any]] = []
+        self.reject: set[str] = set()
         self.fail: set[str] = set()
         self.closed = False
 
@@ -91,6 +93,18 @@ class FakeSource:
         self.series_calls += 1
         self._maybe_fail("timeseries")
         return {"entity_id": entity_id, "points": []}
+
+    def submit_feedback(self, body: dict[str, Any]) -> dict[str, Any]:
+        if body["anomaly_event_id"] in self.reject:
+            import httpx
+
+            raise httpx.HTTPStatusError(
+                "gone",
+                request=httpx.Request("POST", "http://x"),
+                response=httpx.Response(404),
+            )
+        self.posted.append(body)
+        return {"feedback_id": "f"}
 
     def feedback_analytics(self) -> dict[str, Any]:
         self._maybe_fail("feedback")

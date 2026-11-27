@@ -55,14 +55,50 @@ def _signal_of(window: WindowedFeatures) -> str | None:
     return next(iter(window.signals), None)
 
 
+def _details(window: WindowedFeatures, context: dict[str, Any]) -> dict[str, Any]:
+    """Source-specific extras: a vehicle's position and route, an SKU's stock band.
+
+    Warehouse sensors have none. Missing context fields are simply left out.
+    """
+    if window.source_type == "vehicle":
+        adherence = window.signals.get("route_adherence_score")
+        wanted = {
+            "latitude": context.get("latitude"),
+            "longitude": context.get("longitude"),
+            "heading": context.get("heading"),
+            "route_id": context.get("route_id"),
+            "driver_id": context.get("driver_id"),
+            "distance_from_route_m": context.get("distance_from_route_m"),
+            "route_adherence_score": adherence.last if adherence is not None else None,
+        }
+    elif window.source_type == "inventory":
+        change = window.signals.get("change_amount")
+        wanted = {
+            "transaction_type": context.get("transaction_type"),
+            "change_amount": change.last if change is not None else None,
+            "min_stock": context.get("min_stock"),
+            "max_stock": context.get("max_stock"),
+            "reorder_point": context.get("reorder_point"),
+        }
+    else:
+        return {}
+    return {key: value for key, value in wanted.items() if value is not None}
+
+
 def entity_summary(window: WindowedFeatures) -> dict[str, Any] | None:
-    """Latest reading of an entity as a JSON-friendly dict (``None`` if it has no signal)."""
+    """Latest reading of an entity as a JSON-friendly dict (``None`` if it has no signal).
+
+    Vehicles and SKUs add a ``details`` dict (position / route, or stock band and last
+    transaction); warehouse sensors have no ``details`` key.
+    """
     signal = _signal_of(window)
     if signal is None:
         return None
     context = dict(window.context)
     unit = context.get("unit") or DEFAULT_UNITS.get(window.source_type)
+    extras = _details(window, context)
     return {
+        **({"details": extras} if extras else {}),
         "entity_id": window.entity_id,
         "source_type": window.source_type,
         "signal": signal,
@@ -74,6 +110,22 @@ def entity_summary(window: WindowedFeatures) -> dict[str, Any] | None:
         "sensor_type": context.get("sensor_type") or context.get("reading_type"),
         "expected_range": expected_range(window.source_type, signal, context),
     }
+
+
+def _point_extras(window: WindowedFeatures) -> dict[str, Any]:
+    """Extra fields of one plotted point: a vehicle's position, an SKU's transaction."""
+    if window.source_type == "vehicle":
+        lat, lon = window.context.get("latitude"), window.context.get("longitude")
+        return {"lat": lat, "lon": lon} if lat is not None and lon is not None else {}
+    if window.source_type == "inventory":
+        change = window.signals.get("change_amount")
+        extras: dict[str, Any] = {}
+        if change is not None:
+            extras["d"] = change.last
+        if window.context.get("transaction_type") is not None:
+            extras["tx"] = window.context["transaction_type"]
+        return extras
+    return {}
 
 
 def all_entities(cache: FeatureCache) -> list[dict[str, Any]]:
@@ -103,7 +155,7 @@ def entity_timeseries(
     signal = summary["signal"]
     newest = windows[-1].window_end.timestamp()
     points = [
-        {"t": _iso(w.window_end), "v": w.signals[signal].last}
+        {"t": _iso(w.window_end), "v": w.signals[signal].last, **_point_extras(w)}
         for w in windows
         if signal in w.signals and newest - w.window_end.timestamp() <= lookback_seconds
     ]

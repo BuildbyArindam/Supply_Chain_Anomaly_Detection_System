@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import dash_bootstrap_components as dbc
+import plotly.graph_objects as go
 
 from src.dashboard.components.theme import SEVERITY_BOOTSTRAP, SEVERITY_ORDER
 
@@ -111,3 +113,8 @@ def hour_range(end: datetime, hours: int) -> list[datetime]:
     """Return ``hours`` consecutive hour starts, the last one being the hour of ``end``."""
     last = hour_floor(end)
     return [last - timedelta(hours=h) for h in range(hours - 1, -1, -1)]
+
+
+def figure_signature(fig: go.Figure) -> str:
+    """Short fingerprint of a figure, so a callback can skip sending an unchanged one."""
+    return hashlib.sha1(fig.to_json().encode(), usedforsecurity=False).hexdigest()

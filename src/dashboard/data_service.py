@@ -31,6 +31,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Protocol
@@ -52,6 +53,8 @@ DEFAULT_LATENCY_TARGET_MS: Final = 500.0
 KAFKA_LAG_WARN: Final = 1_000
 KAFKA_LAG_CRITICAL: Final = 10_000
 MAX_BACKOFF_S: Final = 10.0
+#: Most SKUs the inventory page reads history for (one request each).
+MAX_INVENTORY_SKUS: Final = 100
 #: Fields of an alert kept in the browser-side ``anomaly-store`` (details are fetched on click).
 SLIM_FIELDS: Final[tuple[str, ...]] = (
     "event_id",
@@ -78,6 +81,13 @@ def severity_rank(name: Any) -> int:
 def slim_alert(alert: Mapping[str, Any]) -> dict[str, Any]:
     """Reduce an alert to the fields the tables and charts need."""
     return {key: alert.get(key) for key in SLIM_FIELDS}
+
+
+def alert_status(alert: Mapping[str, Any]) -> str:
+    """``false_positive``, ``resolved`` or ``open``; a false-positive verdict wins."""
+    if alert.get("false_positive_marked"):
+        return "false_positive"
+    return "resolved" if alert.get("is_resolved") else "open"
 
 
 def _is_active(alert: Mapping[str, Any]) -> bool:
@@ -113,6 +123,9 @@ class DashboardSource(Protocol):
 
     def models(self) -> dict[str, Any]:
         """``{"registry": [...model types with versions...], "current": {...}}``."""
+
+    def submit_feedback(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Post one analyst verdict (``FeedbackRequest`` fields); raises when it is rejected."""
 
     def close(self) -> None:
         """Release resources."""
@@ -175,6 +188,12 @@ class HttpSource:
             "registry": self._get("/api/v1/models")["models"],
             "current": self._get("/api/v1/models/current"),
         }
+
+    def submit_feedback(self, body: dict[str, Any]) -> dict[str, Any]:
+        """POST ``/api/v1/feedback``; a 4xx/5xx raises :class:`httpx.HTTPStatusError`."""
+        response = self._client.post("/api/v1/feedback", json=body)
+        response.raise_for_status()
+        return response.json()  # type: ignore[no-any-return]
 
     def close(self) -> None:
         """Close the HTTP client."""
@@ -254,6 +273,17 @@ class InProcessSource:
         return {
             "registry": list_models(self.service).model_dump(mode="json")["models"],
             "current": current_models(self.service).model_dump(mode="json"),
+        }
+
+    def submit_feedback(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Record a verdict through the service (same validation as the API endpoint)."""
+        from src.api.schemas import FeedbackRequest
+
+        outcome = self.service.record_feedback(FeedbackRequest(**body))
+        return {
+            "feedback_id": outcome.event.event_id,
+            "anomaly_event_id": outcome.event.anomaly_event_id,
+            "replaced_previous": outcome.replaced,
         }
 
     def close(self) -> None:
@@ -338,6 +368,8 @@ class DashboardDataService:
         self._thread: threading.Thread | None = None
         self._series_cache: dict[tuple[str, float], tuple[float, dict[str, Any] | None]] = {}
         self._series_lock = threading.Lock()
+        self._inventory_cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
+        self._inventory_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -583,6 +615,143 @@ class DashboardDataService:
         """Latest reading of every live entity, optionally of one source type."""
         rows = self.snapshot().entities
         return [e for e in rows if source_type in (None, e.get("source_type"))]
+
+    def query_alerts(
+        self,
+        *,
+        severities: Sequence[str] | None = None,
+        anomaly_types: Sequence[str] | None = None,
+        entity_types: Sequence[str] | None = None,
+        status: str | None = None,
+        window_hours: float | None = None,
+        entity_id: str | None = None,
+        limit: int = DEFAULT_ALERT_LIMIT,
+    ) -> list[dict[str, Any]]:
+        """Filter the snapshot's alerts (full records), newest first.
+
+        Filtering runs here on the server, so the browser only receives the matching rows. An
+        empty or ``None`` list for a filter means "any". The service holds the newest
+        ``alert_limit`` alerts, so older ones are out of reach.
+
+        Args:
+            severities: Keep these severity names.
+            anomaly_types: Keep these anomaly types (``point`` / ``contextual`` / ``collective``).
+            entity_types: Keep these entity types (``warehouse_sensor`` / ``vehicle`` /
+                ``inventory_sku``).
+            status: ``open``, ``false_positive`` or ``resolved``; ``None`` or ``all`` keeps all.
+            window_hours: Only alerts from the last N hours (measured from the reference time).
+            entity_id: Only this entity.
+            limit: Most rows returned.
+        """
+        snap = self.snapshot()
+        cutoff = snap.reference_now - timedelta(hours=window_hours) if window_hours else None
+        wanted_sev = {str(v).upper() for v in severities or ()}
+        wanted_type = set(anomaly_types or ())
+        wanted_entity = set(entity_types or ())
+        rows: list[tuple[datetime, dict[str, Any]]] = []
+        for alert in snap.alerts:
+            if wanted_sev and str(alert.get("severity", "")).upper() not in wanted_sev:
+                continue
+            if wanted_type and alert.get("anomaly_type") not in wanted_type:
+                continue
+            if wanted_entity and alert.get("entity_type") not in wanted_entity:
+                continue
+            if entity_id is not None and alert.get("entity_id") != entity_id:
+                continue
+            if status not in (None, "", "all") and alert_status(alert) != status:
+                continue
+            moment = parse_timestamp(alert.get("timestamp"))
+            if cutoff is not None and (moment is None or moment < cutoff):
+                continue
+            rows.append((moment or datetime.min.replace(tzinfo=UTC), alert))
+        rows.sort(key=lambda pair: pair[0], reverse=True)
+        return [alert for _, alert in rows[: max(0, limit)]]
+
+    def submit_feedback(
+        self,
+        event_ids: Sequence[str],
+        feedback_type: str,
+        *,
+        analyst_id: str = "dashboard",
+        notes: str | None = None,
+        max_workers: int = 4,
+    ) -> dict[str, Any]:
+        """Send one verdict per alert to the API (there is no batch endpoint) and report each.
+
+        A failure on one alert never stops the others. The snapshot is refreshed afterwards so
+        the tables show the new status at once.
+
+        Returns:
+            ``{"requested", "ok", "failed": [{"event_id", "error"}], "feedback_type"}``.
+        """
+        unique = list(dict.fromkeys(str(e) for e in event_ids if e))
+
+        def send(event_id: str) -> tuple[str, str | None]:
+            body: dict[str, Any] = {
+                "anomaly_event_id": event_id,
+                "feedback_type": feedback_type,
+                "analyst_id": analyst_id,
+            }
+            if notes:
+                body["notes"] = notes
+            try:
+                self.source.submit_feedback(body)
+            except httpx.HTTPStatusError as error:
+                status = error.response.status_code
+                reason = "alert no longer stored" if status == 404 else f"HTTP {status}"
+                return event_id, reason
+            except Exception as error:  # noqa: BLE001 - one bad row must not stop the batch
+                return event_id, f"{type(error).__name__}: {error}"
+            return event_id, None
+
+        with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(unique) or 1))) as pool:
+            results = list(pool.map(send, unique))
+        failed = [{"event_id": eid, "error": err} for eid, err in results if err is not None]
+        if len(failed) < len(unique):
+            try:
+                self.refresh()
+            except Exception as error:  # noqa: BLE001 - the verdicts are stored either way
+                _log.warning("dashboard_refresh_after_feedback_failed", error=repr(error))
+        return {
+            "requested": len(unique),
+            "ok": len(unique) - len(failed),
+            "failed": failed,
+            "feedback_type": feedback_type,
+        }
+
+    def get_route(self, route_id: str | None) -> dict[str, Any] | None:
+        """Planned route (``origin``, ``destination``, ``waypoints``) of a built-in route id.
+
+        Returns ``None`` for an unknown route; the vehicle map then shows only the GPS trail.
+        """
+        if not route_id:
+            return None
+        try:
+            from src.data_simulation.vehicle_simulator import default_routes
+
+            return default_routes().get(str(route_id))
+        except ImportError:  # pragma: no cover - the simulator ships in every image
+            return None
+
+    def get_inventory_series(
+        self, window_s: float = 3600.0, max_age_s: float = 5.0
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Last ``window_s`` seconds of transactions of every live SKU, by SKU id.
+
+        One read per SKU, so the result is cached for ``max_age_s`` seconds and shared by every
+        browser. Each point is ``{"t", "v" (stock level), "d" (change), "tx" (type)}``.
+        """
+        now = time.monotonic()
+        with self._inventory_lock:
+            cached = self._inventory_cache
+            if cached is not None and now - cached[0] < max_age_s:
+                return cached[1]
+            result: dict[str, list[dict[str, Any]]] = {}
+            for entity in self.get_entities("inventory")[:MAX_INVENTORY_SKUS]:
+                series = self.get_sensor_timeseries(str(entity["entity_id"]), window_s)
+                result[str(entity["entity_id"])] = list((series or {}).get("points") or [])
+            self._inventory_cache = (now, result)
+            return result
 
     def get_alert_trend(self, hours: int = 24) -> list[dict[str, Any]]:
         """Alerts per hour by severity for the last ``hours`` hours (zero-filled, oldest first).

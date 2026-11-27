@@ -296,6 +296,22 @@ _ROUTE_TEMPLATES: Final[tuple[_RouteTemplate, ...]] = (
 )
 
 
+def default_routes() -> dict[str, dict[str, Any]]:
+    """Return the built-in freight routes by id (the planned routes of the default fleet).
+
+    The dashboard draws these as the planned route polylines. Each value is
+    ``{"origin": str, "destination": str, "waypoints": [(lat, lon), ...]}``.
+    """
+    return {
+        t.route_id: {
+            "origin": t.origin,
+            "destination": t.destination,
+            "waypoints": [tuple(p) for p in t.waypoints],
+        }
+        for t in _ROUTE_TEMPLATES
+    }
+
+
 def build_default_vehicles(n_vehicles: int = 5, *, seed: int | None = None) -> list[VehicleTracker]:
     """Build a fleet on the built-in freight routes.
 
