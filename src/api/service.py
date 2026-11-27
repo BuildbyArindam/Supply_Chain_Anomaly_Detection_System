@@ -29,7 +29,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from src.api.anomaly_store import AnomalyStore
 from src.api.feedback_store import FeedbackStore
@@ -120,6 +120,35 @@ class FeedbackOutcome:
     replaced: bool
     threshold_adjustment: float | None = None
     drift_alert_id: str | None = None
+
+
+class ChallengerReview(Protocol):
+    """A challenger model waiting for an analyst's decision (Day 21 dashboard).
+
+    The retraining orchestrator promotes a challenger by itself when it beats the champion by the
+    required margin. A deployment that wants a human to decide instead holds the challenger back
+    and exposes it through this interface, which is what ``/api/v1/models/promote`` and
+    ``/reject`` drive. :attr:`InferenceService.challenger_review` is ``None`` until something
+    attaches one.
+    """
+
+    def pending(self) -> dict[str, Any] | None:
+        """Describe the waiting challenger, or return ``None`` when none waits.
+
+        Shape (only ``champion`` and ``challenger`` with ``metrics`` are needed)::
+
+            {"model_name": "lstm_classifier", "min_improvement": 0.02, "created_at": ISO time,
+             "champion": {"version": str, "metrics": {"f1": .., "precision": .., "recall": ..}},
+             "challenger": {"version": str, "metrics": {...}},
+             "pr_curve": {"champion": {"recall": [..], "precision": [..]},
+                          "challenger": {"recall": [..], "precision": [..]}}}   # optional
+        """
+
+    def promote(self) -> dict[str, Any]:
+        """Make the challenger the serving model; return a short result."""
+
+    def reject(self) -> dict[str, Any]:
+        """Discard the challenger; return a short result."""
 
 
 class EventNotFoundError(LookupError):
@@ -389,6 +418,12 @@ class InferenceService:
         # meta-feature rows of recent alerts, so a later verdict can train the meta-learner
         self._alert_context: OrderedDict[str, list[float | None]] = OrderedDict()
         self._alert_context_capacity = cfg.inference.anomaly_store_capacity
+
+        # Continuous retraining (Day 17) is wired in by the process that runs it, not built here:
+        #: The :class:`~src.models.retraining_pipeline.RetrainingOrchestrator`, once attached.
+        self.retraining: Any | None = None
+        #: A challenger waiting for a human decision, once attached (see :class:`ChallengerReview`).
+        self.challenger_review: ChallengerReview | None = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle

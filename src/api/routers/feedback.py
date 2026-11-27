@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from src.api.dependencies import ServiceDep, require_admin
 from src.api.schemas import (
@@ -88,6 +88,18 @@ def feedback_analytics(service: ServiceDep) -> dict[str, Any]:
     before / after, estimated false-positive reduction) and the drift detector's state.
     """
     return service.feedback_processor.analytics()
+
+
+@router.get("/timeline", summary="Daily false-positive rate and feedback volume")
+def feedback_timeline(
+    service: ServiceDep, days: Annotated[int, Query(ge=1, le=90)] = 7
+) -> dict[str, Any]:
+    """Per-day false-positive rates, the day x hour feedback volume and per-entity tallies.
+
+    Days are UTC calendar days ending today; a day without verdicts has a ``null`` rate. Feeds the
+    dashboard's feedback analytics.
+    """
+    return service.feedback_processor.timeline(days)
 
 
 @router.post(

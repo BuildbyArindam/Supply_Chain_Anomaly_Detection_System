@@ -1360,6 +1360,82 @@ class FeedbackProcessor:
             ),
         }
 
+    def timeline(self, days: int = 7, now: datetime | None = None) -> dict[str, Any]:
+        """Daily false-positive rates, the day x hour verdict volume and per-entity tallies.
+
+        Feeds the dashboard's feedback analytics (Day 21). Days are UTC calendar days and the last
+        one is the day of ``now``; a day without verdicts is kept with a ``None`` rate so a chart
+        shows a gap, not a false "0 % false positives".
+
+        Args:
+            days: Window length in days (1-90).
+            now: Reference time (default: the wall clock).
+
+        Returns:
+            ``{"days", "start", "end", "daily", "heatmap", "entities"}``:
+
+            * ``daily``: one row per day, ``{"date", "total", "false_positive",
+              "false_positive_rate"}`` (labels only).
+            * ``heatmap``: the non-empty ``{"date", "hour", "count"}`` cells; counts *every*
+              feedback event (including severity adjustments), because it shows analyst activity.
+            * ``entities``: per-entity label tallies in the window, highest false-positive rate
+              first.
+        """
+        span = max(1, min(int(days), 90))
+        today = _aware(now or _utcnow()).astimezone(UTC).date()
+        first = today - timedelta(days=span - 1)
+        daily = {
+            first + timedelta(days=i): [0, 0] for i in range(span)
+        }  # [labels, false positives]
+        cells: dict[tuple[str, int], int] = {}
+        per_entity: dict[str, list[int]] = {}
+        for event in self.store.all():
+            when = _aware(event.timestamp).astimezone(UTC)
+            if not first <= when.date() <= today:
+                continue
+            key = (when.date().isoformat(), when.hour)
+            cells[key] = cells.get(key, 0) + 1
+            if not event.is_label:
+                continue
+            row = daily[when.date()]
+            row[0] += 1
+            row[1] += int(event.is_false_positive)
+            if event.entity_id:
+                tally = per_entity.setdefault(event.entity_id, [0, 0])
+                tally[0] += 1
+                tally[1] += int(event.is_false_positive)
+        entities = sorted(
+            (
+                {
+                    "entity_id": name,
+                    "total": total,
+                    "false_positive": fp,
+                    "false_positive_rate": fp / total,
+                }
+                for name, (total, fp) in per_entity.items()
+            ),
+            key=lambda row: (-row["false_positive_rate"], -row["false_positive"], row["entity_id"]),
+        )
+        return {
+            "days": span,
+            "start": first.isoformat(),
+            "end": today.isoformat(),
+            "daily": [
+                {
+                    "date": day.isoformat(),
+                    "total": total,
+                    "false_positive": fp,
+                    "false_positive_rate": fp / total if total else None,
+                }
+                for day, (total, fp) in daily.items()
+            ],
+            "heatmap": [
+                {"date": day, "hour": hour, "count": count}
+                for (day, hour), count in sorted(cells.items())
+            ],
+            "entities": entities,
+        }
+
 
 __all__ = [
     "FEEDBACK_TYPES",
