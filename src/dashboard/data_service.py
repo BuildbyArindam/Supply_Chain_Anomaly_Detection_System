@@ -48,6 +48,9 @@ SEVERITY_RANK: Final[dict[str, int]] = {name: i for i, name in enumerate(SEVERIT
 CRITICAL_RANK: Final = SEVERITY_RANK["CRITICAL"]
 DEFAULT_ALERT_LIMIT: Final = 1000
 DEFAULT_LATENCY_TARGET_MS: Final = 500.0
+#: Consumer lag (messages) at which the status row turns amber / red (red = the Day 24 alert rule).
+KAFKA_LAG_WARN: Final = 1_000
+KAFKA_LAG_CRITICAL: Final = 10_000
 MAX_BACKOFF_S: Final = 10.0
 #: Fields of an alert kept in the browser-side ``anomaly-store`` (details are fetched on click).
 SLIM_FIELDS: Final[tuple[str, ...]] = (
@@ -468,6 +471,81 @@ class DashboardDataService:
         active.sort(key=lambda a: severity_rank(a.get("severity")), reverse=True)
         return active[: max(0, n)]
 
+    def get_recent_alerts(self, n: int = 20) -> list[dict[str, Any]]:
+        """Return the ``n`` newest alerts of any status, newest first (the overview's live feed)."""
+        rows = sorted(self.snapshot().alerts, key=lambda a: a.get("timestamp") or "", reverse=True)
+        return [slim_alert(a) for a in rows[: max(0, n)]]
+
+    def get_entity_alerts(
+        self, entity_id: str, since: datetime | None = None, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """Alerts of one entity, oldest first, for the overlay on its time-series chart.
+
+        False-positive alerts are left out (an analyst said they were not anomalies); resolved
+        ones stay (they were real). ``since`` drops alerts older than that time.
+        """
+        found = []
+        for alert in self.snapshot().alerts:
+            if alert.get("entity_id") != entity_id or alert.get("false_positive_marked"):
+                continue
+            moment = parse_timestamp(alert.get("timestamp"))
+            if moment is None or (since is not None and moment < since):
+                continue
+            found.append((moment, slim_alert(alert)))
+        found.sort(key=lambda pair: pair[0])
+        return [alert for _, alert in found[-max(0, limit) :]]
+
+    def get_status_badges(self) -> list[dict[str, str]]:
+        """State of the four system components shown on the overview's status row.
+
+        Each item is ``{"name", "state", "detail"}`` with ``state`` one of ``ok``, ``warn``,
+        ``error`` or ``unknown`` (not reported by this deployment).
+
+        * Kafka: the API's Kafka probe (``/health`` ``checks.kafka``).
+        * Models: trained models serving = ok, statistical fallback = warn, none loaded = error.
+        * Dashboard: the link from this dashboard to the API (error when the core data is stale).
+        * Kafka lag: total consumer lag against ``KAFKA_LAG_WARN`` / ``KAFKA_LAG_CRITICAL``.
+        """
+        snap = self.snapshot()
+        checks = (snap.health or {}).get("checks") or {}
+
+        kafka = checks.get("kafka")
+        if not snap.connected and not snap.health:
+            kafka_state, kafka_detail = "unknown", "API unreachable"
+        elif kafka is None:
+            kafka_state, kafka_detail = "unknown", "not monitored"
+        else:
+            kafka_state, kafka_detail = ("ok", "reachable") if kafka == "ok" else ("error", kafka)
+
+        if not snap.health or not snap.health.get("models_loaded", False):
+            models_state, models_detail = "error", "not loaded"
+        elif checks.get("models") == "ok":
+            models_state, models_detail = "ok", "trained models"
+        else:
+            models_state, models_detail = "warn", "statistical fallback"
+
+        if not snap.connected:
+            dash_state, dash_detail = "error", "API unreachable"
+        elif snap.errors:
+            dash_state, dash_detail = "warn", f"no data: {', '.join(sorted(snap.errors))}"
+        else:
+            dash_state, dash_detail = "ok", "live"
+
+        lag = snap.pipeline.get("consumer_lag")
+        if isinstance(lag, bool) or not isinstance(lag, int | float):
+            lag_state, lag_detail = "unknown", "not reported"
+        else:
+            lag_state = (
+                "error" if lag >= KAFKA_LAG_CRITICAL else "warn" if lag >= KAFKA_LAG_WARN else "ok"
+            )
+            lag_detail = f"{int(lag):,} msgs"
+        return [
+            {"name": "Kafka", "state": kafka_state, "detail": kafka_detail},
+            {"name": "Models", "state": models_state, "detail": models_detail},
+            {"name": "Dashboard", "state": dash_state, "detail": dash_detail},
+            {"name": "Kafka lag", "state": lag_state, "detail": lag_detail},
+        ]
+
     def get_alert(self, event_id: str) -> dict[str, Any] | None:
         """Fetch the full alert (with contributing features), fetched from the source on demand."""
         try:
@@ -530,8 +608,10 @@ class DashboardDataService:
     def get_summary_metrics(self) -> dict[str, Any]:
         """Headline numbers of the overview page.
 
-        Keys: ``total_alerts_today`` (UTC day), ``alerts_last_hour``, ``active_critical`` (active
-        alerts at CRITICAL or above), ``fp_rate_24h`` (``None`` without feedback),
+        Keys: ``total_alerts_today`` (UTC day), ``alerts_last_hour``, ``active_alerts`` (all
+        active alerts), ``active_critical`` (active alerts at CRITICAL or above), ``critical_24h``
+        (CRITICAL or EMERGENCY alerts of the last 24 h, resolved or not), ``fp_rate_24h``
+        (``None`` without feedback),
         ``model_health_score`` (0-1, see :meth:`model_health`), ``avg_latency_p99`` (ms, ``None``
         when the streaming engine is not reporting), ``stored_alerts``, ``connected``,
         ``api_status``, ``drift_alert_active``, ``errors`` and ``updated_at``.
@@ -541,10 +621,16 @@ class DashboardDataService:
         stamps = [parse_timestamp(a.get("timestamp")) for a in snap.alerts]
         today = sum(1 for m in stamps if m is not None and m.date() == ref.date())
         last_hour = sum(1 for m in stamps if m is not None and ref - m <= timedelta(hours=1))
+        active = self.get_active_anomalies(len(snap.alerts))
         active_critical = sum(
+            1 for a in active if severity_rank(a.get("severity")) >= CRITICAL_RANK
+        )
+        critical_24h = sum(
             1
-            for a in self.get_active_anomalies(len(snap.alerts))
+            for a, m in zip(snap.alerts, stamps, strict=True)
             if severity_rank(a.get("severity")) >= CRITICAL_RANK
+            and m is not None
+            and ref - m <= timedelta(hours=24)
         )
         window = (snap.feedback.get("windows") or {}).get("last_24h") or {}
         fp_rate = window.get("false_positive_rate") if window.get("total") else None
@@ -553,7 +639,9 @@ class DashboardDataService:
         return {
             "total_alerts_today": today,
             "alerts_last_hour": last_hour,
+            "active_alerts": len(active),
             "active_critical": active_critical,
+            "critical_24h": critical_24h,
             "fp_rate_24h": fp_rate,
             "model_health_score": health["score"],
             "avg_latency_p99": p99 if p99 else None,

@@ -18,6 +18,7 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -101,14 +102,76 @@ def test_dashboard_loads_with_its_key_elements(browser: Any, dashboard_url: str)
         )
         assert "Live" in page.locator("#status-strip").inner_text()
         page.wait_for_function(
-            "document.querySelector('#ov-alerts-today')?.innerText.trim() !== '—'", timeout=10_000
+            "document.querySelector('#ov-active-alerts')?.innerText.trim() !== '—'", timeout=10_000
         )
-        for kpi in ["ov-alerts-today", "ov-active-critical", "ov-fp-rate", "ov-latency"]:
+        for kpi in ["ov-active-alerts", "ov-critical-24h", "ov-model-health", "ov-latency"]:
             assert page.locator(f"#{kpi}").is_visible(), kpi  # the four KPI cards
-        assert page.locator("#ov-active-critical").inner_text().strip() not in ("", "—")
+        assert page.locator("#ov-active-alerts").inner_text().strip() == "3"
+        assert page.locator("#ov-feed-table tbody tr").count() == 3  # the live alert feed
+        assert page.locator("#ov-donut").is_visible() and page.locator("#ov-trend").is_visible()
         assert not errors, errors
     finally:
         page.close()
+
+
+class LiveWarehouseSource(FakeSource):
+    """A fake source with one temperature sensor whose series gains a reading every second."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.start = datetime.now(UTC)
+        self.entity_rows = [
+            {
+                "entity_id": "wh1-A-temp-01",
+                "source_type": "warehouse",
+                "signal": "value",
+                "value": 3.0,
+                "timestamp": self.start.isoformat(),
+                "unit": "celsius",
+                "zone": "A",
+                "warehouse_id": "wh1",
+                "sensor_type": "temperature",
+                "expected_range": [2.0, 4.0],
+            }
+        ]
+
+    def timeseries(self, entity_id: str, lookback_seconds: float) -> dict[str, Any] | None:
+        now = datetime.now(UTC).replace(microsecond=0)
+        points = [
+            {"t": (now - timedelta(seconds=i)).isoformat().replace("+00:00", "Z"), "v": 3.0}
+            for i in range(60, -1, -1)
+        ]
+        return {**self.entity_rows[0], "points": points}
+
+
+def test_warehouse_chart_grows_in_place_and_shows_the_heatmap(browser: Any) -> None:
+    from werkzeug.serving import make_server
+
+    source = LiveWarehouseSource()
+    app = create_dash_app(source, public_api_url="", start_poller=True)
+    port = free_port()
+    server = make_server("127.0.0.1", port, app.server, threaded=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    page = browser.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    try:
+        page.goto(f"http://127.0.0.1:{port}/warehouse", wait_until="networkidle")
+        page.wait_for_selector("#wh-graph .main-svg", timeout=10_000)
+        count = "document.querySelector('#wh-graph .js-plotly-plot').data[0].x.length"
+        first = page.evaluate(count)
+        page.evaluate("document.querySelector('#wh-graph .js-plotly-plot').__kept = true")
+        page.wait_for_function(f"{count} > {first}", timeout=15_000)  # points were appended
+        # extendTraces mutated the same plot element; a redraw would have replaced it
+        assert page.evaluate("document.querySelector('#wh-graph .js-plotly-plot').__kept") is True
+        assert "wh1-A-temp-01" in page.locator("#wh-sensor").inner_text()
+        page.wait_for_selector("#wh-heatmap .main-svg", timeout=10_000)
+        assert "3.0°C" in page.locator("#wh-heatmap").inner_text()
+        assert not errors, errors
+    finally:
+        page.close()
+        server.shutdown()
+        app.scad_service.stop()
 
 
 def test_navigation_reaches_every_page(browser: Any, dashboard_url: str) -> None:

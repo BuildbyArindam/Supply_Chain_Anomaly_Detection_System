@@ -111,6 +111,9 @@ def create_dash_app(
         meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"}],
     )
     app.scad_service = service  # type: ignore[attr-defined]
+    # Pages find the service through the Flask app of the *current request*, so several dashboards
+    # can live in one process (tests do this); ``dash.get_app()`` would return the first one.
+    app.server.extensions["scad_service"] = service
 
     app.layout = html.Div(
         [
