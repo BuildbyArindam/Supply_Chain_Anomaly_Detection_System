@@ -131,7 +131,9 @@ def layout() -> html.Div:
             ),
             dbc.Row(
                 [
-                    _dropdown("inv-warehouse", "Warehouse", sel["warehouse_options"], sel["warehouse"]),
+                    _dropdown(
+                        "inv-warehouse", "Warehouse", sel["warehouse_options"], sel["warehouse"]
+                    ),
                     _dropdown("inv-zone", "Zone", sel["zone_options"], sel["zone"]),
                     _dropdown("inv-sku", "SKU", sel["sku_options"], sel["sku"]),
                 ],

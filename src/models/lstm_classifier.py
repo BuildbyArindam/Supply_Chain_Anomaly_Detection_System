@@ -268,7 +268,9 @@ def predict_logits(
             logits.append(out.cpu().numpy())
             attention.append(weights.cpu().numpy())
     if not logits:
-        return np.empty((0, model.n_classes), np.float32), np.empty((0, tensor.shape[1]), np.float32)
+        return np.empty((0, model.n_classes), np.float32), np.empty(
+            (0, tensor.shape[1]), np.float32
+        )
     return np.concatenate(logits), np.concatenate(attention)
 
 
@@ -330,7 +332,9 @@ def balanced_class_weights(y: np.ndarray, n_classes: int) -> np.ndarray:
     """
     counts = np.bincount(np.asarray(y, dtype=np.int64), minlength=n_classes).astype(np.float64)
     if (counts == 0).any():
-        raise ValueError(f"classes without training samples: {np.flatnonzero(counts == 0).tolist()}")
+        raise ValueError(
+            f"classes without training samples: {np.flatnonzero(counts == 0).tolist()}"
+        )
     return counts.sum() / (n_classes * counts)
 
 
@@ -392,9 +396,9 @@ def smote_oversample(
         else:
             k = min(k_neighbors, int(count) - 1)
             neighbours = (
-                NearestNeighbors(n_neighbors=k + 1).fit(members).kneighbors(
-                    members, return_distance=False
-                )[:, 1:]
+                NearestNeighbors(n_neighbors=k + 1)
+                .fit(members)
+                .kneighbors(members, return_distance=False)[:, 1:]
             )
             base = rng.integers(0, count, need)
             pick = neighbours[base, rng.integers(0, k, need)]
@@ -547,7 +551,7 @@ class LabeledSequences:
         )
 
     def class_counts(self, n_classes: int) -> np.ndarray:
-        """Number of windows per class."""
+        """Return the number of windows per class."""
         return np.bincount(self.y, minlength=n_classes)
 
     def to_dataset(self) -> SequenceDataset:
@@ -701,7 +705,9 @@ class DatasetBuilder:
         )[self.source_type]
         return self.build(rows)
 
-    def build(self, dataset: LabeledFeatureSet, scaler: OnlineScaler | None = None) -> ClassifierData:
+    def build(
+        self, dataset: LabeledFeatureSet, scaler: OnlineScaler | None = None
+    ) -> ClassifierData:
         """Turn labelled feature rows into split, oversampled, weighted training data.
 
         Args:
@@ -728,9 +734,7 @@ class DatasetBuilder:
                 f"no windows: each entity needs more than seq_len={self.seq_len} warm rows "
                 "(the aggregator needs ~15 simulated minutes to warm up first)"
             )
-        labels = encode_labels(
-            windows.y_last, windows.type_last, names, collective=self.collective
-        )
+        labels = encode_labels(windows.y_last, windows.type_last, names, collective=self.collective)
         keep = labels >= 0
         n_collective = int((~keep).sum())
 
@@ -1074,7 +1078,12 @@ class LSTMClassifierTrainer:
                         "learning_rate": lr,
                         "gradient_norm": grad_norm,
                     }
-                    scalars.update({f"val_f1/{n}": v for n, v in zip(self.class_names, per_class)})
+                    scalars.update(
+                        {
+                            f"val_f1/{n}": v
+                            for n, v in zip(self.class_names, per_class, strict=False)
+                        }
+                    )
                     for tag, value in scalars.items():
                         writer.add_scalar(tag, value, epoch)
                 _log.debug(
@@ -1179,9 +1188,9 @@ class TemperatureScaler:
         )
         fitted = math.exp(float(result.x))
         # T = 1 is inside the search interval: never return something worse than "no scaling".
-        self.temperature = fitted if self._nll(logits, labels, fitted) <= self._nll(
-            logits, labels, 1.0
-        ) else 1.0
+        self.temperature = (
+            fitted if self._nll(logits, labels, fitted) <= self._nll(logits, labels, 1.0) else 1.0
+        )
         self.is_fitted = True
         return self.temperature
 
@@ -1195,9 +1204,7 @@ class TemperatureScaler:
         result: np.ndarray = softmax(np.asarray(logits, dtype=np.float64) / t, axis=-1)
         return result
 
-    def nll(
-        self, logits: np.ndarray | torch.Tensor, labels: np.ndarray | torch.Tensor
-    ) -> float:
+    def nll(self, logits: np.ndarray | torch.Tensor, labels: np.ndarray | torch.Tensor) -> float:
         """Mean negative log-likelihood of ``labels`` under the scaled probabilities."""
         return self._nll(
             np.asarray(logits, dtype=np.float64),
@@ -1510,7 +1517,9 @@ class LSTMClassifierDetector:
             detector=DETECTOR_NAME,
             raw_value=raw_value,
             details={
-                "class_probabilities": {n: float(p) for n, p in zip(self.class_names, probs)},
+                "class_probabilities": {
+                    n: float(p) for n, p in zip(self.class_names, probs, strict=False)
+                },
                 "predicted_class": self.class_names[int(out.predicted[i])],
                 "attention_weights": [float(a) for a in attention],
                 "top_attention_steps": [int(s) for s in np.argsort(-attention)[:3]],

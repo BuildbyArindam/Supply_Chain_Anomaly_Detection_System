@@ -38,9 +38,10 @@ from __future__ import annotations
 
 import math
 from collections import deque
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Callable, Deque, Dict, List, Mapping, NamedTuple, Optional, Tuple, Union
+from datetime import UTC, datetime
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -67,7 +68,7 @@ __all__ = [
     "UnifiedStatisticalDetector",
 ]
 
-Timestamp = Union[str, datetime, int, float]
+Timestamp = str | datetime | int | float
 
 
 # --------------------------------------------------------------------------- #
@@ -86,13 +87,13 @@ class AnomalyScore:
     timestamp: datetime
     score: float
     is_anomaly: bool
-    anomaly_type: Optional[str]
+    anomaly_type: str | None
     confidence: float
     detector: str = ""
-    raw_value: Optional[float] = None
-    details: Dict[str, Any] = field(default_factory=dict)
+    raw_value: float | None = None
+    details: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """JSON-friendly representation."""
         return {
             "entity_id": self.entity_id,
@@ -115,14 +116,14 @@ class AnomalyResult:
     timestamp: datetime
     severity_score: float
     is_anomaly: bool
-    anomaly_type: Optional[str]
+    anomaly_type: str | None
     confidence: float
-    contributing_detectors: List[str]
-    detector_scores: Dict[str, AnomalyScore]
-    raw_value: Optional[float] = None
-    details: Dict[str, Any] = field(default_factory=dict)
+    contributing_detectors: list[str]
+    detector_scores: dict[str, AnomalyScore]
+    raw_value: float | None = None
+    details: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """JSON-friendly representation."""
         return {
             "entity_id": self.entity_id,
@@ -144,7 +145,7 @@ class Observation(NamedTuple):
     entity_id: str
     value: float
     timestamp: Timestamp
-    zone: Optional[str]
+    zone: str | None
     metric: str
 
 
@@ -161,7 +162,7 @@ def parse_timestamp(ts: Timestamp) -> datetime:
     if isinstance(ts, datetime):
         return ts
     if isinstance(ts, (int, float)):
-        return datetime.fromtimestamp(float(ts), tz=timezone.utc)
+        return datetime.fromtimestamp(float(ts), tz=UTC)
     if isinstance(ts, str):
         text = ts.strip()
         if text.endswith("Z"):
@@ -250,7 +251,7 @@ def _default_scaler_factory() -> RunningStats:
     return RunningStats()
 
 
-def event_to_observations(event: Mapping[str, Any]) -> List[Observation]:
+def event_to_observations(event: Mapping[str, Any]) -> list[Observation]:
     """Turn a raw simulator event (Day 2/3 schema) into scalar observations.
 
     * warehouse sensor: ``sensor_id`` / ``value``
@@ -269,13 +270,19 @@ def event_to_observations(event: Mapping[str, Any]) -> List[Observation]:
         if event.get("route_adherence_score") is not None:
             obs.append(
                 Observation(
-                    f"{vid}:adherence", float(event["route_adherence_score"]), ts, None, "route_adherence"
+                    f"{vid}:adherence",
+                    float(event["route_adherence_score"]),
+                    ts,
+                    None,
+                    "route_adherence",
                 )
             )
         return obs
     if "sku_id" in event:
         eid = f"{event['sku_id']}@{event.get('warehouse_id', '')}"
-        return [Observation(eid, float(event["change_amount"]), ts, event.get("zone"), "change_amount")]
+        return [
+            Observation(eid, float(event["change_amount"]), ts, event.get("zone"), "change_amount")
+        ]
     raise ValueError("Event has none of sensor_id / vehicle_id / sku_id")
 
 
@@ -302,7 +309,7 @@ class _ZState:
     def __init__(self, scaler: Any) -> None:
         self.g = scaler
         self.g_n = 0
-        self.ctx: Dict[int, List[Any]] = {}  # hour -> [scaler, n]
+        self.ctx: dict[int, list[Any]] = {}  # hour -> [scaler, n]
         self.frozen_run = 0
 
 
@@ -340,9 +347,9 @@ class ZScoreDetector:
         min_samples: int = 30,
         contextual: bool = True,
         min_context_samples: int = 30,
-        zone_thresholds: Optional[Mapping[str, float]] = None,
-        hour_thresholds: Optional[Mapping[int, float]] = None,
-        scaler_factory: Optional[Callable[[], Any]] = None,
+        zone_thresholds: Mapping[str, float] | None = None,
+        hour_thresholds: Mapping[int, float] | None = None,
+        scaler_factory: Callable[[], Any] | None = None,
         freeze_on_anomaly: bool = True,
         max_frozen_run: int = 300,
     ) -> None:
@@ -352,16 +359,18 @@ class ZScoreDetector:
         self.min_samples = int(min_samples)
         self.contextual = contextual
         self.min_context_samples = int(min_context_samples)
-        self.zone_thresholds: Dict[str, float] = dict(zone_thresholds or {})
-        self.hour_thresholds: Dict[int, float] = dict(hour_thresholds or {})
+        self.zone_thresholds: dict[str, float] = dict(zone_thresholds or {})
+        self.hour_thresholds: dict[int, float] = dict(hour_thresholds or {})
         self._factory = scaler_factory or _default_scaler_factory
         self.freeze_on_anomaly = freeze_on_anomaly
         self.max_frozen_run = int(max_frozen_run)
-        self._states: Dict[str, _ZState] = {}
-        self._offsets: Dict[str, float] = {}
+        self._states: dict[str, _ZState] = {}
+        self._offsets: dict[str, float] = {}
 
     # -- threshold management ------------------------------------------------
-    def threshold_for(self, entity_id: str, zone: Optional[str] = None, hour: Optional[int] = None) -> float:
+    def threshold_for(
+        self, entity_id: str, zone: str | None = None, hour: int | None = None
+    ) -> float:
         """Effective sigma threshold for an entity at a given zone / hour."""
         thr = self.threshold
         if zone is not None and zone in self.zone_thresholds:
@@ -374,7 +383,7 @@ class ZScoreDetector:
         """Shift one entity's threshold by ``delta`` sigmas (feedback-loop hook)."""
         self._offsets[entity_id] = self._offsets.get(entity_id, 0.0) + float(delta)
 
-    def reset(self, entity_id: Optional[str] = None) -> None:
+    def reset(self, entity_id: str | None = None) -> None:
         """Forget learned state for one entity, or for all of them."""
         if entity_id is None:
             self._states.clear()
@@ -385,14 +394,22 @@ class ZScoreDetector:
 
     # -- streaming API ---------------------------------------------------------
     def update(
-        self, entity_id: str, value: float, timestamp: Timestamp, zone: Optional[str] = None
+        self, entity_id: str, value: float, timestamp: Timestamp, zone: str | None = None
     ) -> AnomalyScore:
         """Score one observation, then learn from it."""
         ts = parse_timestamp(timestamp)
         x = float(value)
         if not math.isfinite(x):
             return AnomalyScore(
-                entity_id, ts, 0.0, False, "point", 0.0, self.name, None, {"skipped": "non_finite_value"}
+                entity_id,
+                ts,
+                0.0,
+                False,
+                "point",
+                0.0,
+                self.name,
+                None,
+                {"skipped": "non_finite_value"},
             )
         st = self._states.get(entity_id)
         if st is None:
@@ -400,8 +417,8 @@ class ZScoreDetector:
         hour = ts.hour
         thr = self.threshold_for(entity_id, zone, hour)
 
-        z_g: Optional[float] = None
-        z_c: Optional[float] = None
+        z_g: float | None = None
+        z_c: float | None = None
         if st.g_n >= self.min_samples:
             v = st.g.transform(x)
             z_g = v if math.isfinite(v) else None
@@ -465,9 +482,9 @@ class _Window:
     __slots__ = ("buf", "since", "q1", "med", "q3")
 
     def __init__(self, maxlen: int) -> None:
-        self.buf: Deque[float] = deque(maxlen=maxlen)
+        self.buf: deque[float] = deque(maxlen=maxlen)
         self.since = 0
-        self.q1: Optional[float] = None
+        self.q1: float | None = None
         self.med = 0.0
         self.q3 = 0.0
 
@@ -497,7 +514,7 @@ class _IQRState:
 
     def __init__(self, window: int, bin_window: int) -> None:
         self.glob = _Window(window)
-        self.bins: Dict[int, _Window] = {}
+        self.bins: dict[int, _Window] = {}
         self.frozen_run = 0
 
 
@@ -548,9 +565,9 @@ class IQRDetector:
         self.refresh_every = int(refresh_every)
         self.freeze_on_anomaly = freeze_on_anomaly
         self.max_frozen_run = int(max_frozen_run)
-        self._states: Dict[str, _IQRState] = {}
+        self._states: dict[str, _IQRState] = {}
 
-    def reset(self, entity_id: Optional[str] = None) -> None:
+    def reset(self, entity_id: str | None = None) -> None:
         """Forget learned state for one entity, or for all of them."""
         if entity_id is None:
             self._states.clear()
@@ -558,14 +575,22 @@ class IQRDetector:
             self._states.pop(entity_id, None)
 
     def update(
-        self, entity_id: str, value: float, timestamp: Timestamp, zone: Optional[str] = None
+        self, entity_id: str, value: float, timestamp: Timestamp, zone: str | None = None
     ) -> AnomalyScore:
         """Score one observation, then learn from it. ``zone`` is unused."""
         ts = parse_timestamp(timestamp)
         x = float(value)
         if not math.isfinite(x):
             return AnomalyScore(
-                entity_id, ts, 0.0, False, "point", 0.0, self.name, None, {"skipped": "non_finite_value"}
+                entity_id,
+                ts,
+                0.0,
+                False,
+                "point",
+                0.0,
+                self.name,
+                None,
+                {"skipped": "non_finite_value"},
             )
         st = self._states.get(entity_id)
         if st is None:
@@ -625,7 +650,7 @@ class _CUSUMState:
 
     def __init__(self, min_std: float) -> None:
         self.stats = RunningStats(min_std)
-        self.buckets: Dict[int, RunningStats] = {}
+        self.buckets: dict[int, RunningStats] = {}
         self.s_pos = 0.0
         self.s_neg = 0.0
         self.hold_left = 0
@@ -698,16 +723,18 @@ class CUSUMDetector:
         self.seasonal = bool(seasonal)
         self.bucket_hours = int(bucket_hours)
         self.min_bucket_samples = int(min_bucket_samples)
-        self._states: Dict[str, _CUSUMState] = {}
+        self._states: dict[str, _CUSUMState] = {}
 
-    def reset(self, entity_id: Optional[str] = None) -> None:
+    def reset(self, entity_id: str | None = None) -> None:
         """Forget learned state for one entity, or for all of them."""
         if entity_id is None:
             self._states.clear()
         else:
             self._states.pop(entity_id, None)
 
-    def _seasonal_baseline(self, st: _CUSUMState, ts: datetime) -> Optional[Tuple[float, float, RunningStats]]:
+    def _seasonal_baseline(
+        self, st: _CUSUMState, ts: datetime
+    ) -> tuple[float, float, RunningStats] | None:
         """(mean, std, current bucket) for ``ts``, or None if the bucket is not trusted yet."""
         bh = self.bucket_hours
         nb = 24 // bh
@@ -731,20 +758,28 @@ class CUSUMDetector:
         return mean, cur.std, cur
 
     def update(
-        self, entity_id: str, value: float, timestamp: Timestamp, zone: Optional[str] = None
+        self, entity_id: str, value: float, timestamp: Timestamp, zone: str | None = None
     ) -> AnomalyScore:
         """Score one observation, then learn from it. ``zone`` is unused."""
         ts = parse_timestamp(timestamp)
         x = float(value)
         if not math.isfinite(x):
             return AnomalyScore(
-                entity_id, ts, 0.0, False, "collective", 0.0, self.name, None, {"skipped": "non_finite_value"}
+                entity_id,
+                ts,
+                0.0,
+                False,
+                "collective",
+                0.0,
+                self.name,
+                None,
+                {"skipped": "non_finite_value"},
             )
         st = self._states.get(entity_id)
         if st is None:
             st = self._states[entity_id] = _CUSUMState(self.min_std)
         stats = st.stats
-        bucket: Optional[RunningStats] = None
+        bucket: RunningStats | None = None
         if self.seasonal:
             bidx = int(ts.hour // self.bucket_hours)
             bucket = st.buckets.get(bidx)
@@ -776,7 +811,9 @@ class CUSUMDetector:
             st.hold_left = self.cooldown_readings
             flagged = True
             if new_alarm:
-                logger.debug(f"CUSUM alarm entity={entity_id} direction={direction} ratio={ratio:.2f}")
+                logger.debug(
+                    f"CUSUM alarm entity={entity_id} direction={direction} ratio={ratio:.2f}"
+                )
         elif st.hold_left > 0:
             st.hold_left -= 1
             flagged = True
@@ -847,9 +884,9 @@ class UnifiedStatisticalDetector:
         cusum_weight: float = 0.3,
         vote_threshold: float = 0.25,
         max_blend: float = 0.5,
-        zscore: Optional[ZScoreDetector] = None,
-        iqr: Optional[IQRDetector] = None,
-        cusum: Optional[CUSUMDetector] = None,
+        zscore: ZScoreDetector | None = None,
+        iqr: IQRDetector | None = None,
+        cusum: CUSUMDetector | None = None,
     ) -> None:
         total = z_weight + iqr_weight + cusum_weight
         if min(z_weight, iqr_weight, cusum_weight) < 0 or total <= 0:
@@ -868,8 +905,8 @@ class UnifiedStatisticalDetector:
         self.cusum = cusum or CUSUMDetector()
 
     @classmethod
-    def production(cls) -> "UnifiedStatisticalDetector":
-        """Settings recommended by ``notebooks/02_statistical_baseline_eval.ipynb``.
+    def production(cls) -> UnifiedStatisticalDetector:
+        """Return the settings recommended by ``notebooks/02_statistical_baseline_eval.ipynb``.
 
         Tuned on one simulated day and validated on a second; chosen to maximise
         F1 subject to <= 3 false-alarm incidents per entity per day. Re-tune on
@@ -882,17 +919,17 @@ class UnifiedStatisticalDetector:
             vote_threshold=0.25,
         )
 
-    def reset(self, entity_id: Optional[str] = None) -> None:
+    def reset(self, entity_id: str | None = None) -> None:
         """Forget learned state in all three detectors."""
         self.zscore.reset(entity_id)
         self.iqr.reset(entity_id)
         self.cusum.reset(entity_id)
 
     def detect(
-        self, entity_id: str, value: float, timestamp: Timestamp, zone: Optional[str] = None
+        self, entity_id: str, value: float, timestamp: Timestamp, zone: str | None = None
     ) -> AnomalyResult:
         """Run all three detectors on one observation and merge the outcome."""
-        scores: Dict[str, AnomalyScore] = {
+        scores: dict[str, AnomalyScore] = {
             "zscore": self.zscore.update(entity_id, value, timestamp, zone),
             "iqr": self.iqr.update(entity_id, value, timestamp, zone),
             "cusum": self.cusum.update(entity_id, value, timestamp, zone),
@@ -909,12 +946,16 @@ class UnifiedStatisticalDetector:
         if is_anomaly:
             severity = max(severity, 0.5)
             lead = max(flagged, key=lambda n: w[n] * scores[n].score)
-            anomaly_type: Optional[str] = scores[lead].anomaly_type
+            anomaly_type: str | None = scores[lead].anomaly_type
         else:
             severity = min(severity, 0.4999)
             anomaly_type = None
 
-        conf_pool = [scores[n].confidence for n in flagged] if flagged else [s.confidence for s in scores.values()]
+        conf_pool = (
+            [scores[n].confidence for n in flagged]
+            if flagged
+            else [s.confidence for s in scores.values()]
+        )
         confidence = float(np.mean(conf_pool)) if conf_pool else 0.0
         return AnomalyResult(
             entity_id=entity_id,
