@@ -1,0 +1,201 @@
+# Full stack: Kafka (KRaft) + topic setup + Kafka UI + simulator + API/streaming inference +
+# dashboard + Prometheus. Run it from the project root:
+#
+#   ./scripts/docker-start.sh            # dev profile (docker/.env.dev)
+#   ./scripts/docker-start.sh prod       # prod profile (docker/.env.prod)
+#
+# or by hand:
+#
+#   docker compose -f docker/docker-compose.full.yml up -d --build
+#   SCAD_ENV_FILE=.env.prod docker compose -f docker/docker-compose.full.yml up -d --build
+#
+# Stop the dev Kafka stack first (`make stop-kafka`): both publish ports 9092 and 8080.
+# See DOCKER.md for ports, volumes, scaling and troubleshooting.
+#
+# The kafka and kafka-init definitions mirror docker/docker-compose.kafka.yml (the broker
+# settings and the topic list); tests/unit/test_docker_files.py fails if they drift apart.
+name: scad
+
+# Settings shared by the three Python services. The env file is picked with SCAD_ENV_FILE
+# (path relative to this file); individual values below override it.
+x-scad-service: &scad-service
+  init: true # a real PID 1: forwards SIGTERM so `docker stop` is clean and zombies are reaped
+  env_file:
+    - ${SCAD_ENV_FILE:-.env.dev}
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    hostname: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # --- KRaft: this node is both broker and controller --------------------------
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      # --- Listeners: kafka:29092 for containers, localhost:9092 for the host ----------
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # --- Single-broker settings --------------------------------------------------------
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are created explicitly by kafka-init so partition counts are exact.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # --- Broker-wide defaults: 7 days retention, 1 MB messages ---------------------------------
+      KAFKA_LOG_RETENTION_MS: 604800000
+      KAFKA_MESSAGE_MAX_BYTES: 1048576
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      # The Confluent image ships the CLI without the .sh suffix.
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # One-shot job: creates the topics (idempotent), prints them, then exits 0. Auto-creation is
+  # off, so everything that touches Kafka waits for this job to finish.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        BOOTSTRAP=kafka:29092
+        RETENTION_MS=604800000   # 7 days
+        MAX_MESSAGE_BYTES=1048576 # 1 MB
+
+        create_topic() {
+          kafka-topics --bootstrap-server "$$BOOTSTRAP" --create --if-not-exists \
+            --topic "$$1" --partitions "$$2" --replication-factor 1 \
+            --config retention.ms="$$RETENTION_MS" \
+            --config max.message.bytes="$$MAX_MESSAGE_BYTES"
+        }
+
+        create_topic warehouse-sensors 6
+        create_topic vehicle-gps       4
+        create_topic inventory-events  4
+        create_topic anomaly-alerts    3
+        create_topic dlq-events        1
+        create_topic model-health      1
+
+        echo "Topics ready:"
+        kafka-topics --bootstrap-server "$$BOOTSTRAP" --describe | grep '^Topic:'
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: "false"
+    restart: unless-stopped
+
+  simulator:
+    <<: *scad-service
+    image: scad-simulator:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.simulator
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      SERVICE_NAME: scad-simulator
+    restart: on-failure
+
+  api:
+    <<: *scad-service
+    image: scad-api:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+    environment:
+      SERVICE_NAME: scad-api
+      # Passed through from your shell (empty = endpoints open); never stored in a committed file.
+      API_ADMIN_KEY: ${API_ADMIN_KEY:-}
+    volumes:
+      - model_registry:/app/models
+      - feedback_data:/app/data/feedback
+      - anomaly_snapshots:/app/data/snapshots
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck.py", "http://127.0.0.1:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    # Gives the API time to persist alerts and feedback and flush Kafka on shutdown.
+    stop_grace_period: 45s
+    restart: unless-stopped
+
+  dashboard:
+    <<: *scad-service
+    image: scad-dashboard:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dashboard
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "8050:8050"
+    environment:
+      SERVICE_NAME: scad-dashboard
+      # Same key as the API: the dashboard sends it as X-API-Key for model promote/reject.
+      API_ADMIN_KEY: ${API_ADMIN_KEY:-}
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck.py", "http://127.0.0.1:8050/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  kafka_data:
+  model_registry:
+  feedback_data:
+  anomaly_snapshots:

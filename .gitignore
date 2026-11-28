@@ -18,6 +18,8 @@ htmlcov/
 .env
 .env.*
 !.env.example
+!docker/.env.dev
+!docker/.env.prod
 
 # Jupyter
 .ipynb_checkpoints/

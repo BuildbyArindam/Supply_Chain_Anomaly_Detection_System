@@ -49,6 +49,8 @@ ENV_OVERRIDES: dict[str, tuple[str, ...]] = {
     "API_URL": ("dashboard", "api_url"),
     "PROMETHEUS_PORT": ("observability", "prometheus_port"),
     "MODEL_REGISTRY_DIR": ("paths", "model_registry"),
+    "FEEDBACK_STORE_PATH": ("paths", "feedback_store"),
+    "ANOMALY_SNAPSHOT_DIR": ("paths", "anomaly_snapshots"),
 }
 
 

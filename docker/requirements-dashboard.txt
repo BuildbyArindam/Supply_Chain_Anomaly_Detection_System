@@ -1,0 +1,13 @@
+# Runtime dependencies of the dashboard image (docker/Dockerfile.dashboard).
+# The dashboard talks to the API over HTTP, so no torch / scikit-learn / Kafka client here.
+# Pins must match requirements.txt: tests/unit/test_docker_files.py fails if they drift.
+dash==4.5.0
+dash-bootstrap-components==2.0.4
+dash-ag-grid==35.3.0
+plotly==7.1.0
+httpx==0.28.1
+pydantic==2.14.4
+python-dotenv==1.2.4
+PyYAML==6.0.3
+structlog==26.1.0
+prometheus-client==0.26.0

@@ -57,6 +57,19 @@ def test_env_overrides_apply_with_type_coercion():
     assert cfg.simulation.speed_multiplier == 10.0
 
 
+def test_storage_path_env_overrides():
+    cfg = _load(
+        environ={
+            "MODEL_REGISTRY_DIR": "/app/models",
+            "FEEDBACK_STORE_PATH": "/app/data/feedback/feedback_store.json",
+            "ANOMALY_SNAPSHOT_DIR": "/app/data/snapshots",
+        }
+    )
+    assert cfg.paths.model_registry == "/app/models"
+    assert cfg.paths.feedback_store == "/app/data/feedback/feedback_store.json"
+    assert cfg.paths.anomaly_snapshots == "/app/data/snapshots"
+
+
 def test_empty_env_values_are_ignored():
     cfg = _load(environ={"API_PORT": "", "KAFKA_BOOTSTRAP_SERVERS": "  "})
     assert cfg.api.port == 8000
