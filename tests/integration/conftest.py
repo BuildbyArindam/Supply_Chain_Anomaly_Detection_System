@@ -64,9 +64,13 @@ class KafkaEnv:
 
     # ------------------------------------------------------------------ factories
     @property
-    def consumer_factory(self) -> Callable[[dict[str, Any]], Any] | None:
-        """Pass to the consumer classes; ``None`` means the real ``confluent_kafka.Consumer``."""
-        return self.broker.consumer_factory if self.broker else None
+    def consumer_factory(self) -> Callable[[dict[str, Any]], Any]:
+        """Pass to the consumer classes: the mock broker's consumer, or the real Kafka one."""
+        if self.broker:
+            return self.broker.consumer_factory
+        from confluent_kafka import Consumer
+
+        return Consumer
 
     def topic(self, field: str) -> str:
         """Name of one of this test's topics (``warehouse_sensors``, ``anomaly_alerts`` ...)."""
