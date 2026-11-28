@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup run-kafka stop-kafka kafka-check run-simulator run-consumer run-api run-streaming test-perf run-dashboard test lint format typecheck docker-build docker-up docker-down docker-logs clean
+.PHONY: help setup test-unit test-integration load-test coverage run-kafka stop-kafka kafka-check run-simulator run-consumer run-api run-streaming test-perf run-dashboard test lint format typecheck docker-build docker-up docker-down docker-logs clean
 
 PYTHON_BOOTSTRAP ?= python3
 VENV   := .venv
@@ -50,6 +50,15 @@ run-dashboard: ## Run the Dash dashboard (Day 18)
 
 test: ## Run the test suite
 	$(PY) -m pytest
+
+test-unit: ## Unit + Docker-free tests with the coverage gate (what CI runs)
+	$(PY) -m pytest tests -n auto -m "not integration and not performance and not browser" --cov=src --cov-report=term-missing:skip-covered --cov-report=html --cov-fail-under=85
+
+test-integration: ## Kafka integration tests on a real broker (needs Docker)
+	$(PY) -m pytest tests/integration -m "integration and not browser"
+
+load-test: ## Locust load test: 0->100 users in 60 s, 100 users for 120 s, asserts the SLOs
+	$(PY) tests/load/run_load_test.py
 
 lint: ## Lint with ruff and check formatting with black
 	$(PY) -m ruff check .

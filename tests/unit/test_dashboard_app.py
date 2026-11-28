@@ -28,7 +28,7 @@ from src.dashboard.utils import (
     parse_timestamp,
     severity_badge,
 )
-from tests.unit.test_dashboard_data_service import FakeSource, alert
+from tests.unit.test_dashboard_data_service import NOW, FakeSource, alert
 
 PAGES = ["/", "/warehouse", "/vehicles", "/inventory", "/alerts", "/model-health"]
 
@@ -49,6 +49,9 @@ def app_and_source():
     source = FakeSource()
     source.alert_rows = [alert(1, "CRITICAL", 2), alert(2, "WARNING", 3), alert(3, "INFO", 4)]
     app = create_dash_app(source, public_api_url="http://api.example:8000", start_poller=False)
+    # The fake alerts are timestamped relative to NOW; pin the service clock so "active in the
+    # last 24 h" does not depend on the day the tests run.
+    app.scad_service._clock = lambda: NOW
     return app, source
 
 

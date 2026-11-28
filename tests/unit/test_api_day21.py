@@ -35,7 +35,7 @@ class Review:
 
 
 def fake_service(**attrs: Any) -> Any:
-    return SimpleNamespace(retraining=None, challenger_review=None, **attrs)
+    return SimpleNamespace(**{"retraining": None, "challenger_review": None, **attrs})
 
 
 def test_retraining_overview_without_an_orchestrator():
