@@ -3,7 +3,7 @@ import logging
 
 import pytest
 
-from src.main import EXIT_ERROR, EXIT_NOT_IMPLEMENTED, EXIT_OK, main
+from src.main import EXIT_ERROR, EXIT_OK, main
 
 
 @pytest.fixture(autouse=True)
@@ -32,10 +32,14 @@ def test_show_config_is_valid_json(capsys):
     assert data["api"]["port"] == 8000
 
 
-@pytest.mark.parametrize("command", ["dashboard"])
-def test_future_components_exit_cleanly(command, capsys):
-    assert main([command]) == EXIT_NOT_IMPLEMENTED
-    assert "not implemented yet" in capsys.readouterr().err
+def test_dashboard_command_runs_the_dash_app(monkeypatch):
+    import importlib
+
+    module = importlib.import_module("src.dashboard.app")
+    calls = []
+    monkeypatch.setattr(module.app, "run", lambda **kwargs: calls.append(kwargs))
+    assert main(["dashboard"]) == EXIT_OK
+    assert len(calls) == 1 and set(calls[0]) == {"host", "port", "debug"}
 
 
 def test_missing_config_returns_error(capsys, tmp_path):

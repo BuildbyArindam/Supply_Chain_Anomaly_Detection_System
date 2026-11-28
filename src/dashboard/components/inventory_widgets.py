@@ -92,9 +92,7 @@ def resolve_sku_selection(
     zones = sorted({str(e["zone"]) for e in in_warehouse if e.get("zone")})
     chosen_zone = _keep_or_first(zone, zones)
     in_zone = sorted(
-        str(e["entity_id"])
-        for e in in_warehouse
-        if not zones or str(e.get("zone")) == chosen_zone
+        str(e["entity_id"]) for e in in_warehouse if not zones or str(e.get("zone")) == chosen_zone
     )
     chosen_sku = _keep_or_first(sku, in_zone)
 
@@ -120,7 +118,7 @@ def top_active_skus(
     alerts: Sequence[Mapping[str, Any]] = (),
     n: int = TOP_SKUS,
 ) -> list[dict[str, Any]]:
-    """The ``n`` SKUs with the most transactions in the window, busiest first.
+    """Return the ``n`` SKUs with the most transactions in the window, busiest first.
 
     Ties go to the larger moved volume. ``has_alert`` is true when the SKU has an alert that an
     analyst has not dismissed.
@@ -321,7 +319,9 @@ def waterfall_figure(
                 customdata=[[b["begin"], b["end"], b["count"]] for b in chosen],
                 hovertemplate=(
                     "%{x|%H:%M} UTC<br>net %{y:+,.0f} units · %{customdata[2]} transactions"
-                    "<br>level %{customdata[0]:,.0f} → %{customdata[1]:,.0f}<extra>" + name + "</extra>"
+                    "<br>level %{customdata[0]:,.0f} → %{customdata[1]:,.0f}<extra>"
+                    + name
+                    + "</extra>"
                 ),
             )
         )
@@ -415,7 +415,9 @@ def anomaly_table(rows: Sequence[Mapping[str, Any]]) -> Any:
             style={"color": MUTED_TEXT},
         )
     header = html.Thead(
-        html.Tr([html.Th(h) for h in ("Time (UTC)", "SKU", "Event", "Magnitude", "Severity", "Status")])
+        html.Tr(
+            [html.Th(h) for h in ("Time (UTC)", "SKU", "Event", "Magnitude", "Severity", "Status")]
+        )
     )
     body = []
     for row in rows:

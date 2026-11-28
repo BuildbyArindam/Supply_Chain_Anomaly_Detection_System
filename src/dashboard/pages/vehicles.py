@@ -125,7 +125,11 @@ def layout() -> html.Div:
                             dcc.Graph(
                                 id="veh-map",
                                 figure=figure,
-                                config={"displayModeBar": False, "responsive": True, "scrollZoom": True},
+                                config={
+                                    "displayModeBar": False,
+                                    "responsive": True,
+                                    "scrollZoom": True,
+                                },
                                 style={"height": "520px"},
                             ),
                             ident="veh-map-card",
@@ -138,9 +142,7 @@ def layout() -> html.Div:
                         card_with_title(
                             "Vehicle details",
                             html.Div(
-                                vehicle_info_card(
-                                    _selected(fleet, focus), None, state["now"]
-                                ),
+                                vehicle_info_card(_selected(fleet, focus), None, state["now"]),
                                 id="veh-info",
                             ),
                             ident="veh-info-panel",
@@ -163,7 +165,8 @@ def layout() -> html.Div:
                 )
             ),
             html.Div(
-                "Colours are paired with text labels: green On route, red Deviation, amber Delayed.",
+                "Colours are paired with text labels: "
+                "green On route, red Deviation, amber Delayed.",
                 className="small",
                 style={"color": MUTED_TEXT},
             ),
@@ -191,9 +194,7 @@ def update_focus(
     current_options: list[dict[str, str]] | None,
 ):
     """Keep the vehicle list current and move the focus to a clicked marker."""
-    fleet = build_fleet(
-        _service().get_entities("vehicle"), [], _service().snapshot().reference_now
-    )
+    fleet = build_fleet(_service().get_entities("vehicle"), [], _service().snapshot().reference_now)
     options = _focus_options(fleet)
     clicked = None
     if dash.ctx.triggered_id == "veh-map":

@@ -36,6 +36,7 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+asyncio_default_fixture_loop_scope = "function"
 markers = [
     "integration: needs external services such as Kafka (deselect with -m 'not integration')",
     "performance: load test that runs for about 30 s (deselect with -m 'not performance')",

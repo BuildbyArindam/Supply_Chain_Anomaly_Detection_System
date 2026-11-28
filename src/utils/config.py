@@ -318,9 +318,9 @@ class EnsembleConfig(_Section):
     """Weighted-average fallback and stacking meta-learner settings."""
 
     statistical_weight: float = Field(default=0.2, ge=0, le=1)
-    isolation_forest_weight: float = Field(default=0.25, ge=0, le=1)
+    isolation_forest_weight: float = Field(default=0.3, ge=0, le=1)
     lstm_autoencoder_weight: float = Field(default=0.25, ge=0, le=1)
-    lstm_classifier_weight: float = Field(default=0.3, ge=0, le=1)
+    lstm_classifier_weight: float = Field(default=0.25, ge=0, le=1)
     meta_learner_holdout: float = Field(default=0.2, gt=0, lt=1)
     cv_folds: int = Field(default=5, ge=2)
 

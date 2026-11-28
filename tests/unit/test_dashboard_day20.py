@@ -1,10 +1,10 @@
-"""Tests of the Day 20 pages: vehicles, inventory and alerts (widgets and data-service additions)."""
+"""Tests of the Day 20 pages: vehicles, inventory and alerts (widgets, data service)."""
 
 from __future__ import annotations
 
 import csv
 import io
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from src.dashboard.components import alert_widgets as aw
@@ -64,7 +64,12 @@ def test_old_alert_does_not_make_a_vehicle_delayed() -> None:
 
 
 def test_deviation_markers_use_nearest_gps_fix() -> None:
-    trails = {"v1": [{"t": iso(seconds_ago=60), "lat": 1.0, "lon": 2.0}, {"t": iso(), "lat": 3.0, "lon": 4.0}]}
+    trails = {
+        "v1": [
+            {"t": iso(seconds_ago=60), "lat": 1.0, "lon": 2.0},
+            {"t": iso(), "lat": 3.0, "lon": 4.0},
+        ]
+    }
     marks = vw.deviation_markers(
         [
             {**alert(1, entity="v1", minutes_ago=0), "entity_type": "vehicle"},
@@ -78,9 +83,24 @@ def test_deviation_markers_use_nearest_gps_fix() -> None:
 
 def test_fleet_map_uses_open_street_map_and_names_every_status() -> None:
     fleet = vw.build_fleet([vehicle("a"), vehicle("b", distance=900)], [], NOW)
-    routes = {"R1": {"waypoints": [(40.0, -88.0), (42.0, -86.0)], "origin": "A", "destination": "B"}}
-    fig = vw.fleet_map(fleet, routes, [{"vehicle_id": "b", "latitude": 41, "longitude": -87,
-                                        "timestamp": iso(), "severity": "CRITICAL"}], {}, "all")
+    routes = {
+        "R1": {"waypoints": [(40.0, -88.0), (42.0, -86.0)], "origin": "A", "destination": "B"}
+    }
+    fig = vw.fleet_map(
+        fleet,
+        routes,
+        [
+            {
+                "vehicle_id": "b",
+                "latitude": 41,
+                "longitude": -87,
+                "timestamp": iso(),
+                "severity": "CRITICAL",
+            }
+        ],
+        {},
+        "all",
+    )
     assert fig.layout.map.style == "open-street-map"
     names = {t.name for t in fig.data}
     assert {"Planned route", "Alert position (✕)", "On route", "Deviation"} <= names
@@ -129,7 +149,8 @@ def test_top_active_skus_ranks_by_transactions_and_caps_at_ten() -> None:
 
 def test_top_active_skus_flags_open_alerts_only() -> None:
     rows = iw.top_active_skus(
-        [sku("A"), sku("B")], {},
+        [sku("A"), sku("B")],
+        {},
         [{**alert(1, entity="A")}, {**alert(2, entity="B", fp=True)}],
     )
     assert {r["sku_id"]: r["has_alert"] for r in rows} == {"A": True, "B": False}
@@ -143,7 +164,11 @@ def test_stock_gauges_one_indicator_per_sku_with_reorder_threshold() -> None:
 
 
 def test_sku_selection_cascades_and_keeps_valid_choices() -> None:
-    entities = [sku("A", warehouse="W1", zone="A"), sku("B", warehouse="W1", zone="B"), sku("C", warehouse="W2", zone="A")]
+    entities = [
+        sku("A", warehouse="W1", zone="A"),
+        sku("B", warehouse="W1", zone="B"),
+        sku("C", warehouse="W2", zone="A"),
+    ]
     first = iw.resolve_sku_selection(entities)
     assert (first["warehouse"], first["zone"], first["sku"]) == ("W1", "A", "A")
     moved = iw.resolve_sku_selection(entities, "W2", "B", "A")  # zone B does not exist in W2
@@ -164,7 +189,9 @@ def test_waterfall_buckets_chain_and_mark_anomalies() -> None:
 
 
 def test_waterfall_figure_has_floating_bars_and_empty_state() -> None:
-    fig = iw.waterfall_figure(iw.transaction_buckets(pts(-40, 60, -30)), sku_id="A", reorder_point=300)
+    fig = iw.waterfall_figure(
+        iw.transaction_buckets(pts(-40, 60, -30)), sku_id="A", reorder_point=300
+    )
     assert any(t.type == "bar" and t.base is not None for t in fig.data)
     assert any(t.name == "Reorder point" for t in fig.data)
     assert not iw.waterfall_figure([]).data
@@ -208,11 +235,15 @@ def test_query_alerts_filters_on_the_server() -> None:
 def test_submit_feedback_posts_each_alert_and_reports_failures() -> None:
     service, source = service_with([alert(i) for i in range(4)])
     source.reject = {"e2"}
-    result = service.submit_feedback(["e0", "e1", "e2", "e1", ""], "false_positive", analyst_id="me")
+    result = service.submit_feedback(
+        ["e0", "e1", "e2", "e1", ""], "false_positive", analyst_id="me"
+    )
     assert result["requested"] == 3 and result["ok"] == 2
     assert result["failed"] == [{"event_id": "e2", "error": "alert no longer stored"}]
     assert sorted(b["anomaly_event_id"] for b in source.posted) == ["e0", "e1"]
-    assert all(b["analyst_id"] == "me" and b["feedback_type"] == "false_positive" for b in source.posted)
+    assert all(
+        b["analyst_id"] == "me" and b["feedback_type"] == "false_positive" for b in source.posted
+    )
 
 
 def test_grid_rows_and_status_labels() -> None:
@@ -220,11 +251,22 @@ def test_grid_rows_and_status_labels() -> None:
     assert [r["status"] for r in rows] == ["Resolved", "False positive", "Open"]
     assert rows[0]["event_id"] == "e1" and rows[0]["severity"] == "WARNING"
     assert {c["field"] for c in aw.column_defs()} >= {
-        "timestamp", "entity_id", "entity_type", "severity", "anomaly_type", "value", "status", "actions"}
+        "timestamp",
+        "entity_id",
+        "entity_type",
+        "severity",
+        "anomaly_type",
+        "value",
+        "status",
+        "actions",
+    }
 
 
 def test_shap_figure_takes_top_five_by_strength() -> None:
-    feats = [{"feature": f"f{i}", "shap_value": v} for i, v in enumerate([0.1, -0.9, 0.3, 0.05, -0.2, 0.6, 0.4])]
+    feats = [
+        {"feature": f"f{i}", "shap_value": v}
+        for i, v in enumerate([0.1, -0.9, 0.3, 0.05, -0.2, 0.6, 0.4])
+    ]
     fig = aw.shap_figure(feats)
     assert len(fig.data[0].y) == 5 and set(fig.data[0].y) == {"f1", "f5", "f6", "f2", "f4"}
     assert fig.data[0].y[-1] == "f1"  # strongest drawn at the top
@@ -237,8 +279,12 @@ def test_detail_shows_a_missing_alert_without_failing() -> None:
 
 
 def test_csv_has_every_field_and_is_formula_safe() -> None:
-    row = {**alert(1), "entity_id": "=HYPERLINK(1)", "extra_field": "x",
-           "individual_scores": {"if": 0.5}}
+    row = {
+        **alert(1),
+        "entity_id": "=HYPERLINK(1)",
+        "extra_field": "x",
+        "individual_scores": {"if": 0.5},
+    }
     text = aw.alerts_to_csv([row, alert(2, fp=True)])
     parsed = list(csv.DictReader(io.StringIO(text)))
     assert len(parsed) == 2
@@ -254,6 +300,8 @@ def test_feedback_notice_reports_partial_failure_and_skips() -> None:
     ok = aw.feedback_notice({"requested": 2, "ok": 2, "failed": []}, "false positive", skipped=1)
     assert "skipped" in str(ok.children)
     partial = aw.feedback_notice(
-        {"requested": 2, "ok": 1, "failed": [{"event_id": "abcdefghij", "error": "HTTP 500"}]}, "false positive")
+        {"requested": 2, "ok": 1, "failed": [{"event_id": "abcdefghij", "error": "HTTP 500"}]},
+        "false positive",
+    )
     assert partial.color == "warning" and "HTTP 500" in str(partial.children)
     assert aw.feedback_notice({"requested": 0}, "x").color == "secondary"

@@ -1,4 +1,4 @@
-"""Unit tests for the Day 11 LSTM classifier (model, data, SMOTE, trainer, calibration, detector)."""
+"""Unit tests for the Day 11 LSTM classifier (model, data, SMOTE, trainer, calibration)."""
 
 from __future__ import annotations
 
@@ -151,7 +151,9 @@ class TestModel:
         model = LSTMClassifier(F, hidden_size=8)
         logits, _ = model(torch.randn(3, T, F))
         logits.sum().backward()
-        assert all(p.grad is not None and bool(p.grad.abs().sum() > 0) for p in model.attn_key.parameters())
+        assert all(
+            p.grad is not None and bool(p.grad.abs().sum() > 0) for p in model.attn_key.parameters()
+        )
         assert model.lstm.weight_ih_l0.grad is not None
 
 
@@ -196,7 +198,9 @@ class TestSmote:
         rng = np.random.default_rng(0)
         majority = rng.normal(0, 1, (200, 3))
         minority = rng.normal(10, 0.5, (12, 3))
-        out = smote_oversample(np.vstack([majority, minority]), np.array([0] * 200 + [1] * 12), ratio=1)
+        out = smote_oversample(
+            np.vstack([majority, minority]), np.array([0] * 200 + [1] * 12), ratio=1
+        )
         synthetic = out.x[out.synthetic]
         assert len(synthetic) == 188
         # interpolations of minority points stay inside their bounding box
@@ -349,15 +353,15 @@ class TestDatasetBuilder:
                 spans.setdefault(ent, []).append((end - (T - 1), end, name))
         for ent, items in spans.items():
             items.sort()
-            for (s1, e1, n1), (s2, e2, n2) in zip(items, items[1:], strict=False):
+            for (_s1, e1, n1), (s2, _e2, n2) in zip(items, items[1:], strict=False):
                 if n1 != n2:
                     assert s2 > e1, f"{ent}: windows of {n1} and {n2} overlap"
 
     def test_labels_match_newest_row_ground_truth(self):
         rows = synthetic_rows(n_entities=1, n_rows=6000)
-        data = DatasetBuilder(
-            seq_len=T, stride=1, smote_ratio=None, group_blocks=4, seed=0
-        ).build(rows)
+        data = DatasetBuilder(seq_len=T, stride=1, smote_ratio=None, group_blocks=4, seed=0).build(
+            rows
+        )
         point = data.train_real.subset(data.train_real.y == 1)
         assert len(point) > 0
         assert (point.x[:, -1, 0] > 1.0).all()  # newest row carries the spike
@@ -365,7 +369,9 @@ class TestDatasetBuilder:
     def test_collective_normal_policy_keeps_those_windows(self):
         rows = synthetic_rows(n_entities=2)
         dropped = DatasetBuilder(seq_len=T, stride=3, smote_ratio=None).build(rows)
-        kept = DatasetBuilder(seq_len=T, stride=3, smote_ratio=None, collective="normal").build(rows)
+        kept = DatasetBuilder(seq_len=T, stride=3, smote_ratio=None, collective="normal").build(
+            rows
+        )
         assert kept.info["n_collective_dropped"] == 0
         n = lambda d: len(d.train) + len(d.val) + len(d.test)  # noqa: E731
         assert n(kept) > n(dropped)
@@ -382,7 +388,9 @@ class TestDatasetBuilder:
         data = DatasetBuilder(seq_len=T, stride=3, smote_ratio=None, columns=[0, 1]).build(rows)
         assert data.n_features == 2 and data.feature_names == NAMES[:2] and data.columns == (0, 1)
         with pytest.raises(ValueError, match="no windows"):
-            DatasetBuilder(seq_len=T).build(synthetic_rows(n_entities=1, n_rows=300).subset(np.arange(T - 2)))
+            DatasetBuilder(seq_len=T).build(
+                synthetic_rows(n_entities=1, n_rows=300).subset(np.arange(T - 2))
+            )
         with pytest.raises(ValueError):
             DatasetBuilder(class_names=("point", "normal"))
         with pytest.raises(ValueError):
@@ -530,7 +538,9 @@ class TestTemperatureScaler:
         p = scaler.scale(logits)
         assert p.sum(axis=1) == pytest.approx([1, 1])
         assert (p.argmax(axis=1) == logits.argmax(axis=1)).all()
-        assert scaler.scale(logits, 1.0) == pytest.approx(np.exp(logits) / np.exp(logits).sum(1, keepdims=True))
+        assert scaler.scale(logits, 1.0) == pytest.approx(
+            np.exp(logits) / np.exp(logits).sum(1, keepdims=True)
+        )
         assert (scaler.scale(torch.tensor(logits)) == p).all()
 
     def test_roundtrip_and_validation(self):
@@ -550,7 +560,9 @@ class TestTemperatureScaler:
         logits, _ = predict_logits(detector.model, data.val.x)
         scaler = TemperatureScaler()
         scaler.calibrate(logits, data.val.y)
-        assert scaler.nll(logits, data.val.y) <= TemperatureScaler._nll(logits, data.val.y, 1.0) + 1e-9
+        assert (
+            scaler.nll(logits, data.val.y) <= TemperatureScaler._nll(logits, data.val.y, 1.0) + 1e-9
+        )
 
 
 class TestCalibrationMetrics:
@@ -562,10 +574,17 @@ class TestCalibrationMetrics:
         p = np.stack([conf, 1 - conf], axis=1)
         y = np.where(correct, 0, 1)
         assert expected_calibration_error(p, y) < 0.03
-        assert expected_calibration_error(np.tile([0.99, 0.01], (n, 1)), (rng.random(n) < 0.5).astype(int)) > 0.4
+        assert (
+            expected_calibration_error(
+                np.tile([0.99, 0.01], (n, 1)), (rng.random(n) < 0.5).astype(int)
+            )
+            > 0.4
+        )
 
     def test_reliability_bins(self):
-        mean_conf, acc, count = reliability_bins(np.array([0.15, 0.17, 0.95]), np.array([0, 1, 1]), 10)
+        mean_conf, acc, count = reliability_bins(
+            np.array([0.15, 0.17, 0.95]), np.array([0, 1, 1]), 10
+        )
         assert count.sum() == 3 and count[1] == 2
         assert acc[1] == pytest.approx(0.5) and mean_conf[9] == pytest.approx(0.95)
         assert math.isnan(acc[5])
@@ -589,7 +608,9 @@ class TestEvaluate:
         assert r.precision[1] == pytest.approx(0.5) and r.recall[1] == pytest.approx(0.5)
         assert r.support.tolist() == [3, 2, 1]
         d = r.to_dict()
-        assert d["per_class"]["point"]["support"] == 2 and d["macro_f1"] == pytest.approx(r.macro_f1)
+        assert d["per_class"]["point"]["support"] == 2 and d["macro_f1"] == pytest.approx(
+            r.macro_f1
+        )
 
     def test_absent_class_gives_nan_auc_and_validation(self):
         y = np.array([0, 0, 1, 1])
@@ -607,17 +628,20 @@ def fake_source(window: np.ndarray, *, warm: bool = True, real: int | None = Non
     if real is not None:
         mask[: n - real] = False
     store = SimpleNamespace(
-        get_features=lambda entity, w: SimpleNamespace(
-            window_end=NOW, is_warm=warm, signals={"temp": SimpleNamespace(last=21.5)}
+        get_features=lambda entity, w: (
+            SimpleNamespace(
+                window_end=NOW, is_warm=warm, signals={"temp": SimpleNamespace(last=21.5)}
+            )
+            if entity != "ghost"
+            else None
         )
-        if entity != "ghost"
-        else None
     )
     return SimpleNamespace(
         store=store,
         window_seconds=(60, 300, 900),
         build_sequence_with_mask=lambda entity, lookback, source_type=None: (
-            torch.from_numpy(window), mask
+            torch.from_numpy(window),
+            mask,
         ),
     )
 
@@ -736,7 +760,9 @@ class TestDetector:
         short = LSTMClassifierDetector(detector.model, NAMES, sequences=fake_source(window, real=3))
         r = short.detect("s1")
         assert r.score == 0.0 and not r.is_anomaly and r.anomaly_type is None
-        assert r.details["real_steps"] == 3 and r.details["required_steps"] == detector.min_real_steps
+        assert (
+            r.details["real_steps"] == 3 and r.details["required_steps"] == detector.min_real_steps
+        )
         with pytest.raises(RuntimeError, match="sequences"):
             detector.detect("s1")
 

@@ -64,7 +64,11 @@ STATUS_COLORS: Final[dict[str, str]] = {
     DEVIATION: CRITICAL_RED,
     DELAYED: WARNING_AMBER,
 }
-STATUS_BOOTSTRAP: Final[dict[str, str]] = {ON_ROUTE: "success", DEVIATION: "danger", DELAYED: "warning"}
+STATUS_BOOTSTRAP: Final[dict[str, str]] = {
+    ON_ROUTE: "success",
+    DEVIATION: "danger",
+    DELAYED: "warning",
+}
 
 DEVIATION_DISTANCE_M: Final = 500.0
 DEVIATION_ADHERENCE: Final = 0.25
@@ -158,7 +162,7 @@ def build_fleet(
 def match_trail_point(
     points: Sequence[Mapping[str, Any]], when: Any, tolerance_s: float = MATCH_TOLERANCE_S
 ) -> Mapping[str, Any] | None:
-    """The GPS fix closest in time to ``when`` (within ``tolerance_s``) that has a position."""
+    """Return the GPS fix closest in time to ``when`` (within ``tolerance_s``) with a position."""
     target = parse_timestamp(when)
     if target is None:
         return None
@@ -185,7 +189,9 @@ def deviation_markers(
     for alert in alerts:
         if alert.get("false_positive_marked"):
             continue
-        point = match_trail_point(trails.get(str(alert.get("entity_id")), ()), alert.get("timestamp"))
+        point = match_trail_point(
+            trails.get(str(alert.get("entity_id")), ()), alert.get("timestamp")
+        )
         if point is None:
             continue
         marks.append(
@@ -344,7 +350,9 @@ def fleet_map(
 def status_badge(status: str) -> dbc.Badge:
     """Badge with the status as text (colour only reinforces it)."""
     return dbc.Badge(
-        STATUS_LABELS.get(status, status), color=STATUS_BOOTSTRAP.get(status, "secondary"), pill=True
+        STATUS_LABELS.get(status, status),
+        color=STATUS_BOOTSTRAP.get(status, "secondary"),
+        pill=True,
     )
 
 

@@ -34,7 +34,12 @@ from src.dashboard.components.theme import (
     empty_figure,
 )
 from src.dashboard.data_service import alert_status
-from src.dashboard.utils import PLACEHOLDER, format_timestamp, format_value_with_unit, severity_badge
+from src.dashboard.utils import (
+    PLACEHOLDER,
+    format_timestamp,
+    format_value_with_unit,
+    severity_badge,
+)
 
 DEFAULT_ANALYST: Final = "dashboard-analyst"
 ROW_LIMIT: Final = 1000
@@ -50,7 +55,9 @@ ENTITY_LABELS: Final[dict[str, str]] = {
     "inventory_sku": "Inventory SKU",
 }
 SEVERITY_OPTIONS: Final = [{"label": s.title(), "value": s} for s in SEVERITY_ORDER]
-TYPE_OPTIONS: Final = [{"label": t.title(), "value": t} for t in ("point", "contextual", "collective")]
+TYPE_OPTIONS: Final = [
+    {"label": t.title(), "value": t} for t in ("point", "contextual", "collective")
+]
 ENTITY_OPTIONS: Final = [{"label": label, "value": key} for key, label in ENTITY_LABELS.items()]
 RANGE_OPTIONS: Final = [
     {"label": "Last hour", "value": 1},
@@ -134,7 +141,7 @@ def _style_rules(colors: Mapping[str, str]) -> dict[str, Any]:
 
 
 def column_defs() -> list[dict[str, Any]]:
-    """AG Grid column definitions: timestamp, entity, type, severity, anomaly type, value, status."""
+    """Return AG Grid columns: timestamp, entity, type, severity, anomaly type, value, status."""
     severity_colors = {name: SEVERITY_COLORS[name] for name in SEVERITY_ORDER}
     status_colors = {"Open": CRITICAL_RED, "False positive": MUTED_TEXT, "Resolved": INFO_BLUE}
     return [
@@ -286,7 +293,8 @@ def alert_detail(alert: Mapping[str, Any] | None) -> html.Div:
                 [
                     severity_badge(alert.get("severity")),
                     html.Span(
-                        f"{alert.get('anomaly_type') or 'anomaly'} anomaly", className="ms-2 fw-semibold"
+                        f"{alert.get('anomaly_type') or 'anomaly'} anomaly",
+                        className="ms-2 fw-semibold",
                     ),
                 ],
                 className="mb-3",
@@ -376,20 +384,20 @@ def alerts_to_csv(alerts: Sequence[Mapping[str, Any]]) -> str:
     writer = csv.writer(buffer, lineterminator="\n")
     writer.writerow(columns)
     for row in flat:
-        writer.writerow(
-            [_csv_cell("" if row.get(c) is None else row.get(c)) for c in columns]
-        )
+        writer.writerow([_csv_cell("" if row.get(c) is None else row.get(c)) for c in columns])
     return buffer.getvalue()
 
 
-def feedback_notice(
-    result: Mapping[str, Any], verdict_label: str, skipped: int = 0
-) -> dbc.Alert:
+def feedback_notice(result: Mapping[str, Any], verdict_label: str, skipped: int = 0) -> dbc.Alert:
     """Message after sending feedback: how many succeeded and which alerts failed."""
     ok, failed = int(result.get("ok", 0)), list(result.get("failed", []))
     requested = int(result.get("requested", ok + len(failed)))
     if requested == 0:
-        return dbc.Alert("Nothing to send: no alert was selected, or all were already marked.", color="secondary", id="alerts-feedback-alert")
+        return dbc.Alert(
+            "Nothing to send: no alert was selected, or all were already marked.",
+            color="secondary",
+            id="alerts-feedback-alert",
+        )
     extra = f" ({skipped} already {verdict_label}, skipped)" if skipped else ""
     if not failed:
         text = f"Marked {ok} alert{'s' if ok != 1 else ''} as {verdict_label}.{extra}"
@@ -397,7 +405,10 @@ def feedback_notice(
     detail = "; ".join(f"{f['event_id'][:8]}…: {f['error']}" for f in failed[:5])
     more = f" (+{len(failed) - 5} more)" if len(failed) > 5 else ""
     return dbc.Alert(
-        f"{ok} of {requested} marked as {verdict_label}; {len(failed)} failed — {detail}{more}{extra}",
+        (
+            f"{ok} of {requested} marked as {verdict_label}; "
+            f"{len(failed)} failed — {detail}{more}{extra}"
+        ),
         color="warning" if ok else "danger",
         dismissable=True,
         id="alerts-feedback-alert",

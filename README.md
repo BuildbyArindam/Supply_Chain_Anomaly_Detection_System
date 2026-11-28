@@ -1,5 +1,8 @@
 # Real-Time Supply Chain Anomaly Detection
 
+[![CI](https://github.com/BuildbyArindam/Supply_Chain_Anomaly_Detection_System/actions/workflows/ci.yml/badge.svg)](https://github.com/BuildbyArindam/Supply_Chain_Anomaly_Detection_System/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/BuildbyArindam/Supply_Chain_Anomaly_Detection_System/branch/main/graph/badge.svg)](https://codecov.io/gh/BuildbyArindam/Supply_Chain_Anomaly_Detection_System)
+
 Streams warehouse sensor, vehicle GPS and inventory events through Kafka and flags anomalies
 with a statistical + Isolation Forest + LSTM ensemble, served by FastAPI and a Dash dashboard.
 
@@ -9,7 +12,10 @@ Status: **Day 5 of 30 - streaming consumer and feature cache.** Models, API and 
 
 ```bash
 make setup        # .venv + pinned dependencies + .env (needs Python 3.11+)
-make test         # unit tests
+make test         # all tests
+make test-unit    # what CI runs: unit tests + 85% coverage gate
+make test-integration  # real Kafka via testcontainers (needs Docker)
+make load-test    # Locust: 0->100 users, asserts p99/error-rate/throughput SLOs
 make lint         # ruff + black --check
 python -m src.main info
 ```

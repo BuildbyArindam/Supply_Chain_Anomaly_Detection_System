@@ -45,6 +45,12 @@ prometheus-client==0.26.0
 # --- Dev tooling -------------------------------------------------------------
 pytest==9.2.0
 pytest-cov==7.1.0
+pytest-asyncio==1.5.0  # async API / streaming integration tests
+pytest-timeout==2.4.0  # a hung test fails instead of blocking CI
+pytest-xdist==3.8.0  # parallel unit tests (pytest -n auto)
+testcontainers==4.15.0  # real Kafka broker for the integration tests (needs Docker)
+docker==7.2.0  # used by testcontainers
+locust==2.47.0  # load test with SLO assertions (tests/load)
 httpx==0.28.1  # API tests + the dashboard's HttpSource
 playwright==1.65.2  # dashboard smoke test; then: playwright install chromium
 black==26.10.1

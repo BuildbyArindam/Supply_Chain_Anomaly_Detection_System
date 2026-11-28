@@ -373,9 +373,7 @@ def toggle_modal(
     State("alerts-analyst", "value"),
     prevent_initial_call=True,
 )
-def modal_feedback(
-    _fp: int | None, _tp: int | None, event_id: str | None, analyst: str | None
-):
+def modal_feedback(_fp: int | None, _tp: int | None, event_id: str | None, analyst: str | None):
     """Send a verdict for the alert shown in the modal."""
     if not event_id:
         return no_update

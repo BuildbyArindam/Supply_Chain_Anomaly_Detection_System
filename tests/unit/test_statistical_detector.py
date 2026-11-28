@@ -324,7 +324,9 @@ def test_unified_drift_typed_collective(rng):
     u = UnifiedStatisticalDetector()
     for i, v in enumerate(rng.normal(3, 0.4, 400)):
         u.detect("s1", float(v), ts(i))
-    results = [u.detect("s1", float(v), ts(400 + i)) for i, v in enumerate(3 + np.linspace(0, 2.4, 30))]
+    results = [
+        u.detect("s1", float(v), ts(400 + i)) for i, v in enumerate(3 + np.linspace(0, 2.4, 30))
+    ]
     flagged = [r for r in results if r.is_anomaly]
     assert flagged
     assert "cusum" in flagged[0].contributing_detectors or flagged[0].anomaly_type == "point"
@@ -354,15 +356,30 @@ def test_unified_cold_start_is_quiet():
 
 # ---------------------------------------------------------------- events
 def test_event_to_observations_schemas():
-    wh = {"sensor_id": "S1", "timestamp": "2026-01-01T00:00:00", "value": 3.1, "metadata": {"zone": "A"}}
+    wh = {
+        "sensor_id": "S1",
+        "timestamp": "2026-01-01T00:00:00",
+        "value": 3.1,
+        "metadata": {"zone": "A"},
+    }
     (o,) = event_to_observations(wh)
     assert (o.entity_id, o.value, o.zone) == ("S1", 3.1, "A")
 
-    gps = {"vehicle_id": "V1", "timestamp": "2026-01-01T00:00:00", "speed_kmh": 55.0, "route_adherence_score": 0.9}
+    gps = {
+        "vehicle_id": "V1",
+        "timestamp": "2026-01-01T00:00:00",
+        "speed_kmh": 55.0,
+        "route_adherence_score": 0.9,
+    }
     obs = event_to_observations(gps)
     assert [x.entity_id for x in obs] == ["V1:speed", "V1:adherence"]
 
-    inv = {"sku_id": "K1", "warehouse_id": "W1", "timestamp": "2026-01-01T00:00:00", "change_amount": -4}
+    inv = {
+        "sku_id": "K1",
+        "warehouse_id": "W1",
+        "timestamp": "2026-01-01T00:00:00",
+        "change_amount": -4,
+    }
     assert event_to_observations(inv)[0].entity_id == "K1@W1"
 
     with pytest.raises(ValueError):
@@ -381,7 +398,12 @@ def test_detect_event_returns_most_severe_metric(rng):
             }
         )
     res = u.detect_event(
-        {"vehicle_id": "V1", "timestamp": ts(400).isoformat(), "speed_kmh": 60.0, "route_adherence_score": 0.2}
+        {
+            "vehicle_id": "V1",
+            "timestamp": ts(400).isoformat(),
+            "speed_kmh": 60.0,
+            "route_adherence_score": 0.2,
+        }
     )
     assert res.is_anomaly
     assert res.details["metric"] == "route_adherence" and res.details["n_metrics"] == 2
