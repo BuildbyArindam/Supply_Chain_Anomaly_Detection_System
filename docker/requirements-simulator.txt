@@ -1,0 +1,8 @@
+# Runtime dependencies of the simulator image (docker/Dockerfile.simulator).
+# Pins must match requirements.txt: tests/unit/test_docker_files.py fails if they drift.
+confluent-kafka==2.16.2
+pydantic==2.14.4
+python-dotenv==1.2.4
+PyYAML==6.0.3
+structlog==26.1.0
+prometheus-client==0.26.0

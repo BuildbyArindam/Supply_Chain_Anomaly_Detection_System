@@ -1,0 +1,34 @@
+# Prometheus scrape configuration for docker/docker-compose.full.yml.
+# Targets use compose service names, so this file only works inside that network. Grafana, alert
+# rules and Alertmanager are added on Day 24 (rule_files / alerting blocks below).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Day 24:
+# rule_files:
+#   - /etc/prometheus/alert_rules.yml
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # API and the streaming inference engine run in one process, so this one endpoint carries the
+  # API request metrics, scad_detection_latency_seconds and the Kafka consumer-lag gauges.
+  - job_name: scad-api
+    metrics_path: /metrics # the app redirects to /metrics/, which Prometheus follows
+    static_configs:
+      - targets: ["api:8000"]
+
+  # The Dash dashboard does not expose Prometheus metrics today (it only serves pages), so this
+  # job stays off: an always-DOWN target would trip "up == 0" alerts. Enable it once the
+  # dashboard has a /metrics endpoint.
+  # - job_name: scad-dashboard
+  #   metrics_path: /metrics
+  #   static_configs:
+  #     - targets: ["dashboard:8050"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

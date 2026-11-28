@@ -1,11 +1,13 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup run-kafka stop-kafka kafka-check run-simulator run-consumer run-api run-streaming test-perf run-dashboard test lint format typecheck docker-build clean
+.PHONY: help setup run-kafka stop-kafka kafka-check run-simulator run-consumer run-api run-streaming test-perf run-dashboard test lint format typecheck docker-build docker-up docker-down docker-logs clean
 
 PYTHON_BOOTSTRAP ?= python3
 VENV   := .venv
 PY     := $(VENV)/bin/python
 IMAGE  ?= supply-chain-anomaly-detection
 COMPOSE := docker compose -f docker/docker-compose.kafka.yml
+FULL    := docker compose -f docker/docker-compose.full.yml
+PROFILE ?= dev
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -62,6 +64,15 @@ typecheck: ## Static type check with mypy
 
 docker-build: ## Build the application Docker image
 	docker build -f docker/Dockerfile -t $(IMAGE):latest .
+
+docker-up: ## Start the full Docker stack and wait for health (PROFILE=dev|prod)
+	./scripts/docker-start.sh $(PROFILE)
+
+docker-down: ## Stop the full Docker stack (keeps volumes)
+	SCAD_ENV_FILE=.env.$(PROFILE) $(FULL) down
+
+docker-logs: ## Follow logs of the full Docker stack
+	SCAD_ENV_FILE=.env.$(PROFILE) $(FULL) logs -f --tail 100
 
 clean: ## Remove caches and build artifacts (keeps .venv)
 	find . -type d \( -name __pycache__ -o -name .pytest_cache -o -name .ruff_cache -o -name .mypy_cache \) -not -path './$(VENV)/*' -prune -exec rm -rf {} +

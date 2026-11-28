@@ -1,0 +1,71 @@
+# API + streaming inference image. Build from the project root:
+#   docker build -f docker/Dockerfile.api -t scad-api .
+#
+# The container runs scripts/run_streaming_pipeline.py: the Kafka inference engine and the FastAPI
+# service in one process, so alerts raised from the stream show up in GET /api/v1/anomalies.
+# To serve the API only (no Kafka consumer), override the command:
+#   docker run --rm -p 8000:8000 -e API_HOST=0.0.0.0 scad-api python -m src.main api
+#
+# Stage 1 builds a virtualenv; stage 2 copies just that venv and the source, so the final image
+# has no pip cache, no build tooling and runs as a non-root user.
+
+# ---------------------------------------------------------------------------
+# Stage 1: builder - install the Python dependencies into /opt/venv
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS builder
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /build
+COPY docker/requirements-api.txt requirements.txt
+
+# CPU-only PyTorch first (about 200 MB instead of the multi-GB CUDA wheel from PyPI). The pin in
+# requirements.txt is then already satisfied (2.15.0+cpu), so the second command leaves it alone.
+RUN pip install --index-url https://download.pytorch.org/whl/cpu torch==2.15.0 \
+    && pip install -r requirements.txt
+
+# ---------------------------------------------------------------------------
+# Stage 2: runtime
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS runtime
+
+# libgomp1: OpenMP runtime that the LightGBM wheel loads (not present in python:slim).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    API_HOST=0.0.0.0 \
+    API_PORT=8000 \
+    MODEL_REGISTRY_DIR=/app/models \
+    FEEDBACK_STORE_PATH=/app/data/feedback/feedback_store.json \
+    ANOMALY_SNAPSHOT_DIR=/app/data/snapshots
+
+RUN useradd --create-home --uid 1000 appuser
+
+WORKDIR /app
+COPY --from=builder /opt/venv /opt/venv
+COPY --chown=appuser:appuser src ./src
+COPY --chown=appuser:appuser configs ./configs
+COPY --chown=appuser:appuser scripts/run_streaming_pipeline.py scripts/healthcheck.py ./scripts/
+
+# Mount points for the named volumes (model_registry, feedback_data, anomaly_snapshots). A new
+# named volume inherits this ownership, so the non-root user can write to it.
+RUN mkdir -p /app/models /app/data/feedback /app/data/snapshots \
+    && chown -R appuser:appuser /app/models /app/data
+
+USER appuser
+EXPOSE 8000
+
+# /health answers 200 whenever the process is up (status "degraded" is reported in the body, e.g.
+# while only the statistical fallback model is loaded), so this probes liveness, not model quality.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=5 \
+    CMD ["python", "scripts/healthcheck.py", "http://127.0.0.1:8000/health"]
+
+CMD ["python", "scripts/run_streaming_pipeline.py"]

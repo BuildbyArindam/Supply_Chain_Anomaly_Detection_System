@@ -1,0 +1,20 @@
+# Runtime dependencies of the API + streaming inference image (docker/Dockerfile.api).
+# torch is installed first from the CPU-only wheel index by the Dockerfile; the pin below is
+# satisfied by that build (2.15.0+cpu). Not needed at runtime and left out on purpose: shap,
+# optuna, tensorboard (training / offline analysis), plotly, jinja2 (evaluation reports),
+# dash (dashboard), pytest and the other dev tools.
+# Pins must match requirements.txt: tests/unit/test_docker_files.py fails if they drift.
+torch==2.15.0
+numpy==2.5.5
+pandas==3.1.1
+scikit-learn==1.9.1
+lightgbm==4.7.0
+joblib==1.6.0
+confluent-kafka==2.16.2
+fastapi==0.165.0
+uvicorn==0.54.0
+pydantic==2.14.4
+python-dotenv==1.2.4
+PyYAML==6.0.3
+structlog==26.1.0
+prometheus-client==0.26.0
